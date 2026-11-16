@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# resolve-workflow.sh — workflow 规则根解析器（两步链的确定性执行体，fix-probe-scan-precision
+# 起本地 pin 步已删——规则解析只剩「全局 canonical → 显式降级」）
+# 契约（minimize-repo-footprint R-MRF-2 / adr-0006 机队锚定：机械协议脚本化，skill 只调用）：
+#   stdout : 规则根路径（唯一 stdout 输出；-h/--help 时改为用法说明并 exit 0）
+#   exit 0 : 解析成功（全局 canonical）
+#   exit 2 : 全局 bundle 不可达/不完整 → 调用方显式降级通用评审 + 转发本脚本 stderr 告警
+#   exit 64: 用法错误
+# env: G_HOME（缺省 ~/.g；测试用它重定向，绝不写真实 $HOME）
+set -euo pipefail
+
+G_HOME="${G_HOME:-$HOME/.g}"
+ROOT=""
+EXPLAIN=0
+
+usage() {
+  cat <<'USAGE'
+用法：resolve-workflow.sh [--root <仓根>] [--explain]
+
+解析 workflow 规则根（全局 canonical），把路径打印到 stdout。
+
+  --root <仓根>  指定仓根；缺省取当前目录所在 git 仓根，不在 git 仓内则取当前目录
+  --explain      在 stderr 说明命中来源
+  -h, --help     打印本说明
+
+环境变量：
+  G_HOME    全局目录，缺省 ~/.g
+
+退出码：
+  0   解析成功
+  2   全局 bundle 不可达或不完整：调用方显式降级为通用评审，并转发本脚本的 stderr 告警
+  64  用法错误
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --root)    [ $# -ge 2 ] || { echo "resolve-workflow: --root requires a value" >&2; exit 64; }
+               case "$2" in -*) echo "resolve-workflow: --root requires a value" >&2; exit 64;; esac
+               ROOT="$2"; shift 2 ;;
+    --explain) EXPLAIN=1; shift ;;
+    *) echo "resolve-workflow: unknown arg: $1（用 --help 看用法）" >&2; exit 64 ;;
+  esac
+done
+
+if [ -z "$ROOT" ]; then
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd 2>/dev/null || true)"
+  if [ -z "$ROOT" ]; then
+    echo "resolve-workflow: ✗ 无法确定仓根（cwd 可能已被删除），请用 --root 显式指定" >&2
+    exit 64
+  fi
+fi
+
+explain() {
+  if [ "$EXPLAIN" -eq 1 ]; then echo "resolve-workflow: source=$1 path=$2" >&2; fi
+}
+
+# 步1：全局 canonical——试目录（Unix 软链透明命中）→ 否则读指针文件（Windows）。平台判断在此，skill 不判平台。
+# 不查仓内 openspec/workflow/：本地副本（含仓内放全套规则副本）一律忽略，规则解析恒指全局 canonical。
+CANON=""
+case "$G_HOME" in
+  /*)
+    if [ -d "$G_HOME/workflow" ]; then
+      CANON="$G_HOME/workflow"
+    elif [ -f "$G_HOME/workflow-path" ]; then
+      # 读失败(权限/不存在)→CANON 空→sane 判失败→步2显式降级
+      CANON="$( (head -n1 "$G_HOME/workflow-path" | tr -d '\r' | sed -e 's/[[:space:]]*$//') 2>/dev/null || true)"
+    fi
+    ;;
+  *)
+    echo "resolve-workflow: ⚠ G_HOME 非绝对路径（${G_HOME}），忽略全局 canonical" >&2
+    ;;
+esac
+
+sane() {  # 最小健全性检查：防 pull 半坏态静默广播（spec-review D2）；两个清单目录须非空（CR-F1）；
+  # tools/ 目录须非空（形状级判据——只查目录存在且非空，MUST NOT 枚举具体 .py 成员）。
+  # lens-metric-contract.md 检查已随 lens-metric 机械移除。
+  [ -n "$1" ] && [ -s "$1/workflow.md" ] \
+    && [ -d "$1/spec-checklists" ] && [ -n "$(ls -A "$1/spec-checklists" 2>/dev/null)" ] \
+    && [ -d "$1/code-checklists" ] && [ -n "$(ls -A "$1/code-checklists" 2>/dev/null)" ] \
+    && [ -d "$1/tools" ] && [ -n "$(ls -A "$1/tools" 2>/dev/null)" ]
+}
+
+if sane "$CANON"; then
+  explain "global-canonical" "$CANON"
+  echo "$CANON"
+  exit 0
+fi
+
+# 步2：显式降级（反静默守卫）——绝不静默当"本项目无此评审层"
+echo "resolve-workflow: ✗ 全局 workflow bundle 不可达或不完整（G_HOME=${G_HOME}）。skill 应显式降级为通用评审并告警。修复：在运行 checkout（~/.skills/g-skills）跑 bash setup.sh" >&2
+exit 2

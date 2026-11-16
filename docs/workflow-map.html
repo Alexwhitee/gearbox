@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gear 工作流全景图</title>
+<style>
+  :root {
+    --bg: #f5f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef1f5;
+    --surface-3: #e7ebf1;
+    --hair: #dbe1ea;
+    --hair-strong: #c6cedb;
+    --ink: #161b22;
+    --ink-2: #3b4351;
+    --muted: #6a7484;
+    --accent: #0d8494;
+    --accent-ink: #0a6d7a;
+    --accent-wash: #e2f2f4;
+    --ok: #16875a;
+    --ok-wash: #dcf1e8;
+    --fail: #cc3d36;
+    --fail-wash: #f8e3e1;
+    --blocked: #b3761a;
+    --blocked-wash: #f6ecd8;
+    --unknown: #6f7a8a;
+    --unknown-wash: #e8ebf0;
+    --font-sans: ui-sans-serif, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, monospace;
+    --maxw: 1180px;
+    --r: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0f14;
+      --surface: #141920;
+      --surface-2: #1a2029;
+      --surface-3: #212936;
+      --hair: #262e3a;
+      --hair-strong: #35404f;
+      --ink: #e7edf4;
+      --ink-2: #b1bcca;
+      --muted: #7c8797;
+      --accent: #2ccfe0;
+      --accent-ink: #74e4ef;
+      --accent-wash: #103138;
+      --ok: #40d09a;
+      --ok-wash: #102b22;
+      --fail: #f16b62;
+      --fail-wash: #34201e;
+      --blocked: #e4ad55;
+      --blocked-wash: #322817;
+      --unknown: #8994a4;
+      --unknown-wash: #212832;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f7f9; --surface: #ffffff; --surface-2: #eef1f5; --surface-3: #e7ebf1;
+    --hair: #dbe1ea; --hair-strong: #c6cedb; --ink: #161b22; --ink-2: #3b4351; --muted: #6a7484;
+    --accent: #0d8494; --accent-ink: #0a6d7a; --accent-wash: #e2f2f4;
+    --ok: #16875a; --ok-wash: #dcf1e8; --fail: #cc3d36; --fail-wash: #f8e3e1;
+    --blocked: #b3761a; --blocked-wash: #f6ecd8; --unknown: #6f7a8a; --unknown-wash: #e8ebf0;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0f14; --surface: #141920; --surface-2: #1a2029; --surface-3: #212936;
+    --hair: #262e3a; --hair-strong: #35404f; --ink: #e7edf4; --ink-2: #b1bcca; --muted: #7c8797;
+    --accent: #2ccfe0; --accent-ink: #74e4ef; --accent-wash: #103138;
+    --ok: #40d09a; --ok-wash: #102b22; --fail: #f16b62; --fail-wash: #34201e;
+    --blocked: #e4ad55; --blocked-wash: #322817; --unknown: #8994a4; --unknown-wash: #212832;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .page {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 20px 96px;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; }
+
+  /* ── top bar ── */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--hair);
+    margin: 0 -20px 0;
+    padding: 10px 20px;
+  }
+  .topbar-inner { max-width: var(--maxw); margin: 0 auto; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .topbar .brand { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; letter-spacing: .02em; color: var(--accent-ink); }
+  .topbar .brand b { color: var(--ink); }
+  .navlinks { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+  .navlinks a {
+    font-size: 12.5px; color: var(--muted); text-decoration: none;
+    padding: 4px 9px; border-radius: 999px; white-space: nowrap;
+  }
+  .navlinks a:hover { color: var(--ink); background: var(--surface-2); }
+  .navlinks a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ── hero ── */
+  .hero { padding: 52px 0 30px; border-bottom: 1px solid var(--hair); }
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent-ink); margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 4.4vw, 44px); line-height: 1.08; margin: 0 0 16px;
+    letter-spacing: -0.02em; text-wrap: balance; font-weight: 680;
+  }
+  .lede { font-size: 17px; color: var(--ink-2); max-width: 66ch; margin: 0; }
+  .lede code { font-family: var(--font-mono); font-size: .86em; color: var(--accent-ink); background: var(--accent-wash); padding: 1px 6px; border-radius: 5px; }
+  .meta-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+  .meta-chip {
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+    border: 1px solid var(--hair); border-radius: 999px; padding: 4px 11px;
+  }
+  .meta-chip b { color: var(--ink); font-weight: 600; }
+
+  /* ── section ── */
+  section { padding: 46px 0 8px; scroll-margin-top: 60px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
+  .sec-num { font-family: var(--font-mono); font-size: 13px; color: var(--accent); font-weight: 600; }
+  h2 { font-size: 23px; letter-spacing: -0.015em; margin: 0; font-weight: 640; }
+  .sec-sub { color: var(--muted); font-size: 14px; margin: 8px 0 26px; max-width: 74ch; }
+  .sec-sub code { font-family: var(--font-mono); font-size: .85em; color: var(--ink-2); }
+
+  /* ── status legend ── */
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 22px 0 4px; padding: 14px 18px; background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r); }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .legend-item code { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+
+  /* ── exit code chip ── */
+  .code-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 600;
+    padding: 2px 8px; border-radius: 6px; border: 1px solid;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .c-ok { color: var(--ok); background: var(--ok-wash); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+  .c-fail { color: var(--fail); background: var(--fail-wash); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
+  .c-blocked { color: var(--blocked); background: var(--blocked-wash); border-color: color-mix(in srgb, var(--blocked) 32%, transparent); }
+  .c-unknown { color: var(--unknown); background: var(--unknown-wash); border-color: color-mix(in srgb, var(--unknown) 32%, transparent); }
+  .c-accent { color: var(--accent-ink); background: var(--accent-wash); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+  /* ── pipeline ── */
+  .pipe { display: flex; flex-direction: column; gap: 0; margin-top: 8px; }
+  .stage {
+    position: relative; display: grid;
+    grid-template-columns: 190px 1fr; gap: 20px;
+    padding: 16px 0 18px 0;
+    border-left: 2px solid var(--hair-strong);
+    padding-left: 26px; margin-left: 8px;
+  }
+  .stage::before {
+    content: ""; position: absolute; left: -7px; top: 24px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--accent);
+  }
+  .stage.is-human::before { background: var(--blocked); border-color: var(--blocked); width: 13px; height: 13px; left: -7.5px; }
+  .stage-left { }
+  .stage-tag { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+  .stage-name { font-size: 16px; font-weight: 640; margin: 2px 0 6px; letter-spacing: -0.01em; }
+  .stage-skill {
+    display: inline-block; font-family: var(--font-mono); font-size: 11.5px;
+    color: var(--accent-ink); background: var(--accent-wash);
+    padding: 2px 8px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .stage-body { display: flex; flex-direction: column; gap: 9px; padding-top: 1px; }
+  .row-line { display: flex; gap: 9px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; }
+  .row-k { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); flex: none; width: 56px; padding-top: 1px; }
+  .row-v { color: var(--ink-2); }
+  .row-v code, .mono { font-family: var(--font-mono); font-size: 12px; color: var(--ink); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+  .row-v .art { color: var(--accent-ink); }
+
+  /* human gate band */
+  .gate-band {
+    margin: 4px 0 4px 8px; padding: 12px 18px;
+    background: var(--blocked-wash); border: 1px solid color-mix(in srgb, var(--blocked) 32%, transparent);
+    border-radius: var(--r); display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .gate-band .g-label { font-family: var(--font-mono); font-size: 11.5px; font-weight: 700; color: var(--blocked); letter-spacing: .04em; text-transform: uppercase; }
+  .gate-band .g-text { font-size: 13.5px; color: var(--ink-2); }
+  .gate-band .g-text code { font-family: var(--font-mono); font-size: 12px; color: var(--blocked); }
+
+  /* ship group wrapper */
+  .ship-group {
+    margin: 6px 0 6px 8px; border: 1px dashed var(--hair-strong); border-radius: 12px;
+    padding: 6px 16px 10px; background: color-mix(in srgb, var(--surface) 60%, transparent);
+  }
+  .ship-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 4px 8px; }
+  .ship-banner .sb-title { font-size: 14px; font-weight: 680; letter-spacing: -0.01em; }
+  .ship-banner .sb-note { font-size: 12.5px; color: var(--muted); }
+  .ship-banner .sb-note code { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent-ink); }
+  .ship-group .stage { border-left-color: var(--accent); margin-left: 4px; }
+  .ship-group .stage::before { border-color: var(--accent); }
+
+  /* ── verdict grid ── */
+  .verdict-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 8px; }
+  .verdict {
+    background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r);
+    padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .verdict .v-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .verdict .v-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+  .verdict .v-desc { font-size: 12.5px; color: var(--muted); }
+
+  /* ── cards (schema) ── */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 8px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r);
+    padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .card.wide { grid-column: 1 / -1; }
+  .card-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .card-h .file { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--ink); }
+  .card-h .by { font-size: 11.5px; color: var(--muted); }
+  .field {
+    display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline;
+    padding: 8px 0; border-top: 1px solid var(--hair);
+  }
+  .field:first-of-type { border-top: none; }
+  .field .fkey { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--accent-ink); }
+  .field .fval { font-family: var(--font-mono); font-size: 12px; color: var(--ink-2); }
+  .field .fnote { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+  .field .fnote code { font-family: var(--font-mono); font-size: 11px; }
+
+  .enum { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .enum span { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--ink-2); border: 1px solid var(--hair); }
+
+  /* ── table ── */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--hair); border-radius: var(--r); margin-top: 8px; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 13px; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface-2); z-index: 1;
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); font-weight: 600; padding: 11px 14px; border-bottom: 1px solid var(--hair-strong); white-space: nowrap;
+  }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid var(--hair); vertical-align: top; color: var(--ink-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--accent-wash) 40%, transparent); }
+  td .sname { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+  td .floc { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  td .tag-b { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+  .tag-bundle { color: var(--accent-ink); background: var(--accent-wash); border: 1px solid color-mix(in srgb,var(--accent) 22%, transparent); }
+  .tag-local { color: var(--muted); background: var(--surface-2); border: 1px solid var(--hair); }
+  .tag-planned { color: var(--blocked); background: var(--blocked-wash); border: 1px solid color-mix(in srgb,var(--blocked) 28%, transparent); }
+  td .skl { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); }
+  td .chk { font-size: 12.5px; }
+  .cell-codes { display: flex; gap: 4px; flex-wrap: wrap; }
+
+  /* ── mini tables (issues/config) ── */
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 8px; }
+  .panel { background: var(--surface); border: 1px solid var(--hair); border-radius: var(--r); padding: 16px 18px; }
+  .panel h3 { margin: 0 0 12px; font-size: 14.5px; font-weight: 640; display: flex; align-items: center; gap: 8px; }
+  .panel h3 .p-file { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); font-weight: 400; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; font-size: 12.5px; align-items: baseline; }
+  .kv dt { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent-ink); }
+  .kv dd { margin: 0; color: var(--ink-2); }
+  .kv dd .mono { font-size: 11.5px; }
+  .statechips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .statechips span { font-family: var(--font-mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--hair); color: var(--ink-2); }
+  .statechips span.term { color: var(--ok); background: var(--ok-wash); border-color: color-mix(in srgb,var(--ok) 26%, transparent); }
+
+  /* ── notes ── */
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 8px; }
+  .note { background: var(--surface-2); border-radius: var(--r); padding: 14px 16px; border: 1px solid var(--hair); }
+  .note .n-t { font-size: 12px; font-family: var(--font-mono); color: var(--accent-ink); font-weight: 600; letter-spacing: .03em; margin-bottom: 6px; }
+  .note .n-b { font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+  .note .n-b code { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink); }
+
+  footer { margin-top: 60px; padding-top: 24px; border-top: 1px solid var(--hair); color: var(--muted); font-size: 12.5px; }
+  footer code { font-family: var(--font-mono); }
+
+  a { color: var(--accent-ink); }
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  @media (max-width: 720px) {
+    .stage { grid-template-columns: 1fr; gap: 10px; }
+    .row-k { width: 48px; }
+  }
+</style>
+</head>
+<body>
+<main style="max-width:960px;margin:auto;padding:24px">
+<nav><a href="workflow-flowchart.html">流程图卡片</a> · <a href="workflow-map.md">Markdown 原文</a></nav>
+<pre style="white-space:pre-wrap;line-height:1.8;font-family:inherit">
+# gear 当前工作流
+
+单人、单会话、串行执行。没有多代理、跨模型调度或模型档位解析。
+
+## 从需求到完成
+
+```text
+g-init（一次铺设）
+    ↓
+g-spec：澄清 → 拷问 → proposal/design/specs/tasks + decision-memo
+    ↓ 阶段交界读盘面材料
+g-review spec：广审、领域、对抗、接地 → spec-review-report
+    ↓ 人明确批准；anchor_writeback 写设计门内容指纹
+g-done：每步前后调用 ship_gate
+    ├─ g-implement mode=plan → tickets.md → 提交
+    ├─ g-implement mode=exec → 逐票实现、自审、验收 → checkpoint
+    ├─ g-review code → code-review-report + 内容指纹
+    ├─ verify → verify-report + 内容指纹
+    └─ hand-off → archive → delta 核验 → commit → ff-only merge
+         明确 skip merge 时：已提交 .skip-merge + 归档 verify=PASS → 完成
+```
+
+## gate 与产物
+
+| 状态 | 动作 | 判据 |
+|---|---|---|
+| REFUSE_START | 返回设计门 | 缺 change 或设计批准 |
+| RUN_PLAN | 出票 | tickets.md 缺失 |
+| CONTINUE_IMPL | 逐票执行 | 仍有票缺已提交的完成标签 |
+| RUN_CODE_REVIEW | 代码审 | 实现完成，无评审报告 |
+| BLOCKED_UPSTREAM | 停止 | 代码审 blocked |
+| RUN_VERIFY | 验证或继续收尾 | 缺 verify，或归档/merge 尚未完成 |
+| VERIFY_FAIL | 停止并展示缺口 | 新鲜 verify=FAIL |
+| RERUN_STALE | 重跑对应步骤 | 被审查内容已变化 |
+| STEP_IN_PROGRESS | 继续对应步骤 | 报告缺结论或 defer 未对账 |
+| SHIPPED | 结束 | 归档已并指定目标，或不合并并留在工作分支完成，或明确跳过合并 |
+| UNKNOWN | 报告原因 | 坏计划、坏锚或判定不能 |
+
+JSON 中旧 next 名只为兼容：g-spec-review → g-review spec；g-code-review → g-review code。
+
+## 核心契约
+
+- tickets 标题与依赖有界解析；唯一 R-ID: all 收尾票覆盖全部功能票，并验收聚合测试套件。
+- 进度只认计划首次提交起的 checkpoint(change:taskN-slug) 标签；勾框不能独立放行。
+- suite-scope 返回配置中的测试层；unconfigured_layers 是待发现命令的层，必须查 CI/README/既有约定，实际执行或附查证依据记未覆盖。显式 domains 的空层集合才是配置确定的无测试域。
+- 收尾票保留原始 suite-scope JSON 的完整 head，verify 以它为差异基准；无测试层也有该基准，不能从通过行反推或猜 HEAD。
+- 三份报告头部 ship-gate 保存批准或结论，reviewed_sha 为 manifest 的 SHA-256，reviewed_manifest 为清单编码。统一由 anchor_writeback.py 计算，不手写。
+- 代码 PASS 写锚必传检查前捕获的完整 --expected-ref，写入时核对代码指纹一致且源码干净；报告 checkpoint 只提交指定路径，拒绝夹带未验证代码。
+- 实现与最终代码审共用 code-review-base.md 放行口径：P0/P1 未解决阻塞，只有 P2 可自动延期。defer 台账标 new/reuse：new 需当前 change 的 open 票，reuse 核验历史 open/closed 中唯一票的 id/pool，不改写来源。
+- `.g-branch.json` 保存 source_branch/work_branch/base_sha/merge_target：从 a 新建默认留在功能分支且不合并，原地开发默认提交归档留在 a；只有明确指定才改目标。评审、suite-scope（传 --change）与 ADR 用固定 base_sha，合并用 merge_target；缺约定先核对补录，不猜默认分支。skip merge 后再次明确请求合并，先明确/沿用目标，再删除并单独提交归档标记，由 gate 续跑。
+- gate 校验格式、完成标签、内容新鲜度与 defer ID 对账；不证明语义审查或测试确实发生。
+- 单会话内联检查不具备独立上下文。设计批准仍须由真人明确给出。
+- 历史 metrics/token 数据只供 g-retro 兼容读取；当前不生成、不强制要求度量锚。
+
+## 工具与维护
+
+规则根由 resolve-workflow.sh 解析到全局 canonical。ship_gate.py、anchor_writeback.py 和 delta_sync_check.py 随 g-done 分发；impl_route.py 随 g-implement 分发。安装由 setup.sh 完成，安装测试使用临时 HOME。
+
+完整流程见 [WORKFLOW-GUIDE.md](../g-init/assets/workflow/WORKFLOW-GUIDE.md)，执行细节以各 SKILL.md 和对应脚本为准。辅助入口 architecture、roadmap、devenv、adr、issues、retro 各自保留其产物与职责。
+</pre>
+</main>
+</body>
+</html>

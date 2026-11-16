@@ -1,0 +1,142 @@
+name: Windows recorder and encoding smoke
+
+on:
+  push:
+    # 发布同时推分支与版本 tag，两者指向同一 commit；tag 推送不再重跑一遍。
+    # 只写 tags-ignore 会让分支推送也不触发（GitHub 规则：未声明的 ref 类型不匹配），须同时声明 branches
+    branches: ['**']
+    tags-ignore: ['**']
+    paths:
+      - ".github/workflows/windows-recorder-smoke.yml"
+      - "setup.sh"
+      - "hack/**"
+      - "g-architecture/scripts/**"
+      - "g-devenv/scripts/**"
+      - "g-done/scripts/**"
+      - "g-implement/scripts/**"
+      - "g-init/assets/**"
+      - "g-init/scripts/**"
+      - "g-issues/**"
+      - "g-retro/scripts/**"
+      - "g-done/scripts/**"
+  pull_request:
+    paths:
+      - ".github/workflows/windows-recorder-smoke.yml"
+      - "setup.sh"
+      - "hack/**"
+      - "g-architecture/scripts/**"
+      - "g-devenv/scripts/**"
+      - "g-done/scripts/**"
+      - "g-implement/scripts/**"
+      - "g-init/assets/**"
+      - "g-init/scripts/**"
+      - "g-issues/**"
+      - "g-retro/scripts/**"
+      - "g-done/scripts/**"
+  workflow_dispatch:
+
+jobs:
+  windows-full-pytest:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install yq (mikefarah/yq, pinned v4.53.6)
+        shell: bash
+        # 装进独立目录再加到 PATH，不放 Git 的 /usr/bin：「yq 缺失」类测试要从 PATH 里
+        # 摘掉 yq，但 PATH 里的 Git\bin 在 Git Bash 中是 /bin，挂载的就是 usr/bin，
+        # 放那里就摘不掉。独立目录也与用户用 winget 安装后的布局一致。
+        run: |
+          set -eu
+          YQ_VERSION="v4.53.6"
+          yq_dir="$(cygpath -u "$RUNNER_TEMP")/yq-bin"
+          mkdir -p "$yq_dir"
+          curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_windows_amd64.exe" -o "$yq_dir/yq.exe"
+          cygpath -w "$yq_dir" >> "$GITHUB_PATH"
+          "$yq_dir/yq.exe" --version
+      - name: Install pytest
+        shell: bash
+        # 用 python 而非 py：py 启动器挑机器上最新的 Python（runner 预装 3.14），
+        # 不是 setup-python 选的版本，3.12 矩阵项会实际跑在 3.14 上。
+        # pytest-xdist：Windows 起子进程慢，串行全量约 10 分钟；runner 4 核，-n auto 并行
+        run: python -m pip install "pytest>=8" pytest-xdist
+      - name: Run full pytest suite
+        shell: bash
+        run: python -m pytest -q -n auto
+
+  windows-recorder-and-encoding-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install yq (mikefarah/yq, pinned v4.53.6)
+        shell: bash
+        # 装进独立目录再加到 PATH，不放 Git 的 /usr/bin：「yq 缺失」类测试要从 PATH 里
+        # 摘掉 yq，但 PATH 里的 Git\bin 在 Git Bash 中是 /bin，挂载的就是 usr/bin，
+        # 放那里就摘不掉。独立目录也与用户用 winget 安装后的布局一致。
+        run: |
+          set -eu
+          YQ_VERSION="v4.53.6"
+          yq_dir="$(cygpath -u "$RUNNER_TEMP")/yq-bin"
+          mkdir -p "$yq_dir"
+          curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_windows_amd64.exe" -o "$yq_dir/yq.exe"
+          cygpath -w "$yq_dir" >> "$GITHUB_PATH"
+          "$yq_dir/yq.exe" --version
+      - name: Install pytest
+        shell: bash
+        # 用 python 而非 py：py 启动器挑机器上最新的 Python（runner 预装 3.14），
+        # 不是 setup-python 选的版本，3.12 矩阵项会实际跑在 3.14 上。
+        run: python -m pip install "pytest>=8"
+      - name: Run actual Windows local-disk recorder smoke
+        shell: bash
+        run: python -m pytest -q g-issues/tests/test_task2_windows_local_fs_smoke.py -W error
+      - name: Run setup with a forced GBK child process
+        shell: bash
+        run: |
+          output="$(PYTHONIOENCODING=gbk bash setup.sh 2>&1)"
+          printf '%s\n' "$output"
+          ! grep -Eq 'UnicodeEncodeError|Traceback' <<<"$output"
+          python3 hack/check_encoding_hygiene.py
+      - name: Run init update with a forced GBK child process
+        shell: bash
+        run: |
+          probe="$RUNNER_TEMP/init-encoding-probe"
+          mkdir -p "$probe"
+          git -C "$probe" init
+          python3 g-init/scripts/init.py init --root "$probe"
+          PYTHONIOENCODING=gbk python3 g-init/scripts/init.py update --root "$probe"
+      - name: Exercise UTF-8 text subprocess call sites (issues_v2.py, retro_report.py, ship_gate.py) and invalid-byte replacement
+        shell: bash
+        run: |
+          probe="$RUNNER_TEMP/issues-v2-encoding-probe"
+          mkdir -p "$probe/openspec/issues/open" "$probe/openspec/issues/closed"
+          git -C "$probe" init -q
+          git -C "$probe" config user.email test@example.com
+          git -C "$probe" config user.name test
+          git -C "$probe" commit -q --allow-empty -m init
+          add_out="$(PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" add --pool bug --json '{"module":"m","summary":"s","priority":"P1"}')"
+          issue_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$add_out")"
+          PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" set-status --id "$issue_id" --to FIXED --evidence "smoke"
+          PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" reindex
+          PYTHONIOENCODING=gbk python3 g-retro/scripts/retro_report.py --root .
+          set +e
+          PYTHONIOENCODING=gbk python3 g-done/scripts/ship_gate.py --root . --change fix-windows-encoding-crash
+          gate_status=$?
+          set -e
+          test "$gate_status" -eq 0 -o "$gate_status" -eq 3 -o "$gate_status" -eq 4 -o "$gate_status" -eq 5 -o "$gate_status" -eq 6
+          python3 -c 'import subprocess, sys; r = subprocess.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([0x80]))"], capture_output=True, text=True, encoding="utf-8", errors="replace"); assert r.stdout == "\ufffd"'
+      - name: Exercise cp936 console and redirected setup output without PYTHONIOENCODING
+        shell: bash
+        run: |
+          chcp.com 936
+          env -u PYTHONIOENCODING python3 hack/check_encoding_hygiene.py
+          env -u PYTHONIOENCODING bash setup.sh > "$RUNNER_TEMP/setup-cp936.log" 2>&1
+          ! grep -Eq 'UnicodeEncodeError|Traceback' "$RUNNER_TEMP/setup-cp936.log"

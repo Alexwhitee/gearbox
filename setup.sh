@@ -1,0 +1,860 @@
+#!/usr/bin/env bash
+# g-skills setup — install/update skills into BOTH:
+#   - Claude  ~/.claude/skills/
+#   - Codex / Cursor   ~/.agents/skills/
+# Idempotent. Unix: absolute symlink (layout-independent). Windows: copy + marker.
+set -e
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_NAME="$(basename "$REPO_DIR")"
+
+# Install destinations (explicit + absolute → independent of where the repo lives)
+TARGET_DIRS=("$HOME/.claude/skills" "$HOME/.agents/skills")
+
+# Platform detection
+IS_WINDOWS=0
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT) IS_WINDOWS=1 ;;
+esac
+
+# Counters (entries formatted "skill @ dest")
+installed=()
+unchanged=()
+skipped=()
+cleaned=()
+
+# marker 兼容收窄（D5）：.g-skills 一律自属；.laodao-skills 仅限我方名单（防误伤 laodao misc 拷贝）
+OUR_LEGACY_NAMES=" opsx-project-init opsx-done opsx-maintain opsx-roadmap-planner spec-review impl-review buglist-recorder todolist-recorder issues-recorder g-init g-done g-maintain g-roadmap g-spec-review g-code-review g-buglist g-todolist g-issues g-upgrade "
+# 已迁至 laodao-skills。旧安装器只回收仍指向本仓的安装项，不接管新仓的链接或副本。
+MIGRATED_SKILL_NAMES=" openspec-upgrade embedded-test-sop "
+is_our_marker_copy() {  # $1 = 目录路径
+  local name="$(basename "$1")"
+  [ -f "$1/.g-skills" ] && return 0
+  # .laodao-skills 认 OUR_LEGACY_NAMES ∪ MIGRATED_SKILL_NAMES——后者不能省：
+  # cleanup_migrated_skills() 的 marker-copy 分支复用本判据回收旧 Windows 拷贝安装，
+  # 若只认 OUR_LEGACY_NAMES，已迁出名单（现不在该名单）永远判非自属，marker 拷贝清不掉。
+  if [ -f "$1/.laodao-skills" ]; then
+    case "$OUR_LEGACY_NAMES$MIGRATED_SKILL_NAMES" in *" $name "*) return 0 ;; esac
+  fi
+  return 1
+}
+
+# Empty dir has nothing to lose — takeable (Windows accident leftovers).
+is_empty_dir() {  # $1 = path
+  [ -d "$1" ] && [ ! -L "$1" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ]
+}
+
+windows_skill_unchanged() {  # $1=source skill name $2=installed target
+  local source_name="$1" target="$2" installed_sha current_sha
+  [ -f "$target/.g-skills" ] || return 1
+  IFS= read -r installed_sha < "$target/.g-skills" || return 1
+  installed_sha="${installed_sha%$'\r'}"
+  case "$installed_sha" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+  git -C "$REPO_DIR" cat-file -e "${installed_sha}^{commit}" 2>/dev/null || return 1
+  git -C "$REPO_DIR" diff --quiet "$installed_sha" HEAD -- "$source_name" || return 1
+  # `status --porcelain` also catches staged and untracked changes, which a
+  # HEAD-to-HEAD diff would miss. A dirty source subtree must always refresh.
+  local dirty
+  dirty="$(git -C "$REPO_DIR" status --porcelain --untracked-files=all -- "$source_name" 2>/dev/null)" || return 1
+  [ -z "$dirty" ]
+}
+
+recover_windows_skill_backup() {  # $1=target $2=skill name
+  local target="$1" name="$2" transaction owner
+  for transaction in "${target%/*}/.g-skills-${name}."*; do
+    [ -d "$transaction" ] && [ ! -L "$transaction" ] || continue
+    [ -f "$transaction/owner" ] && [ ! -L "$transaction/owner" ] || continue
+    IFS= read -r owner < "$transaction/owner" || continue
+    [ "$owner" = "$name" ] || continue
+    if [ -d "$transaction/backup" ]; then
+      [ ! -L "$transaction/backup" ] || continue
+      # The transaction name alone never authorizes recovery or deletion.
+      if [ ! -f "$transaction/backup/.g-skills" ]; then
+        [ -f "$transaction/backup/.laodao-skills" ] || continue
+        case "$OUR_LEGACY_NAMES$MIGRATED_SKILL_NAMES" in *" $name "*) ;; *) continue ;; esac
+      fi
+      if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+        mv -T "$transaction/backup" "$target" 2>/dev/null || return 1
+      else
+        # Another run may still be using this transaction. Leave it alone.
+        continue
+      fi
+    else
+      continue
+    fi
+    rm -rf -- "$transaction" 2>/dev/null || return 1
+  done
+}
+
+install_windows_skill() {  # $1=source directory $2=target $3=skill name
+  local source="$1" target="$2" name="$3" transaction sha dirty
+  if [ -L "$target" ] || { [ -e "$target" ] && { [ ! -d "$target" ] || { ! is_our_marker_copy "$target" && ! is_empty_dir "$target"; }; }; }; then
+    skipped+=("$name @ ${target%/*} — 非自有目录或链接，未覆盖")
+    return 0
+  fi
+  if ! recover_windows_skill_backup "$target" "$name"; then
+    skipped+=("$name @ ${target%/*} — backup 恢复失败")
+    return 0
+  fi
+  sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  if windows_skill_unchanged "$name" "$target"; then
+    if printf '%s\n' "$sha" > "$target/.g-skills"; then
+      unchanged+=("$name @ ${target%/*} — 内容未变化")
+    else
+      skipped+=("$name @ ${target%/*} — marker 刷新失败")
+    fi
+    return 0
+  fi
+  # A dirty copy cannot later masquerade as HEAD after the source is reverted.
+  dirty="$(git -C "$REPO_DIR" status --porcelain --untracked-files=all -- "$name" 2>/dev/null)" || dirty=unknown
+  [ -z "$dirty" ] || sha=unknown
+  transaction="$(mktemp -d "${target%/*}/.g-skills-${name}.XXXXXX")" || {
+    skipped+=("$name @ ${target%/*} — staging 创建失败"); return 0;
+  }
+  if ! printf '%s\n' "$name" > "$transaction/owner" ||
+     ! mkdir "$transaction/stage" ||
+     ! cp -R "$source/." "$transaction/stage" ||
+     ! printf '%s\n' "$sha" > "$transaction/stage/.g-skills"; then
+    rm -rf -- "$transaction" || true
+    skipped+=("$name @ ${target%/*} — staging 失败，旧安装保留")
+    return 0
+  fi
+  if [ -d "$target" ] && ! mv -T "$target" "$transaction/backup"; then
+    rm -rf -- "$transaction" || true
+    skipped+=("$name @ ${target%/*} — backup 失败，旧安装保留；目录可能被终端或编辑器占用：关闭占用它的程序后重跑 setup.sh")
+    return 0
+  fi
+  if ! mv -T "$transaction/stage" "$target"; then
+    if [ -d "$transaction/backup" ]; then
+      if ! mv -T "$transaction/backup" "$target"; then
+        skipped+=("$name @ ${target%/*} — swap/rollback 失败，backup 保留于 $transaction")
+        return 0
+      fi
+    fi
+    rm -rf -- "$transaction" || true
+    skipped+=("$name @ ${target%/*} — swap 失败，旧安装已恢复；目录可能被终端或编辑器占用：关闭占用它的程序后重跑 setup.sh")
+    return 0
+  fi
+  rm -rf -- "$transaction" || true
+  installed+=("$name @ ${target%/*}")
+}
+
+# 自属判据的**第二条腿：内容指纹**（路径名判据是第一条腿，见各 case 分支）。
+#
+# 【为什么必须有它】原判据只按**目录名**认自属（`$REPO_NAME` + 字面 `g-skills` 兜底），
+# 而 `REPO_NAME="$(basename "$REPO_DIR")"` ⇒ 开发 checkout 叫什么名字完全由人定
+# （本机是 `04-g-skills`，段名 ≠ `g-skills`，glob `*/g-skills/*` 不匹配）。
+# 后果是**不对称**：开发树跑 setup 时 `REPO_NAME=04-g-skills`，判据同时认自己和
+# 字面 `g-skills` ⇒ **抢得走**运行 checkout 的链接；反过来运行 checkout 跑 setup 时
+# 只认 `g-skills` ⇒ **抢不回**开发树的链接。**「开发窗口开得出、关不上」**，
+# 而 CLAUDE.md「还原 = 在运行 checkout 重跑 setup」正是靠这条路径——它此前是断的。
+#
+# 【判据形状】不猜名字，问「这条链接的目标是不是落在一个 g-skills checkout 里」——
+# checkout 根同时存在 `setup.sh` 与 `g-init/assets/hack/skill-principles.md`
+# （后者是 skill 味通则的唯一真相源，本仓特征路径）。有确定性信号 ⇒ 机械判（基准 1）。
+#
+# 【这不是放宽守卫，是换成更准的】第三方目录既不叫 `g-skills`、也没有这两个特征文件
+# ⇒ 仍拒；反之若某目录确实是一份 g-skills checkout，把它接管回 canonical 正是期望行为。
+# 【与路径判据是 OR，不是替代】源目录已删的**悬空链** readlink 仍返回路径串、但指纹读不到
+# ⇒ 由路径判据兜底进孤儿清理，旧行为零回退。
+is_our_checkout_path() {  # $1 = readlink 目标路径（形如 <checkout>/<skill> 或更深）
+  local p="$1" d i=0
+  [ -n "$p" ] || return 1
+  case "$p" in /*) ;; *) return 1 ;; esac   # 仅判绝对路径；相对形式交路径判据
+  d="$p"
+  # 逐级上溯找 checkout 根。上界 8 层：`<checkout>/g-init/assets/workflow` 这类最深
+  # 落点也只有 3 层，8 层留足余量又不会在深路径上空转。
+  while [ "$d" != "/" ] && [ -n "$d" ] && [ "$i" -lt 8 ]; do
+    if [ -f "$d/setup.sh" ] && { [ -f "$d/g-init/assets/hack/skill-principles.md" ] || [ -f "$d/sdflow-init/assets/hack/skill-principles.md" ]; }; then
+      return 0
+    fi
+    d="$(dirname "$d")"
+    i=$((i + 1))
+  done
+  return 1
+}
+
+is_migrated_skill() {  # $1 = skill 名称
+  case "$MIGRATED_SKILL_NAMES" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# ─── `set -e` 面治：外部命令**裸调用**失败 = 整个 setup.sh 当场中止 ─────────
+# 🔴 后果不是「少装一件」，而是【这一趟什么都没装完】：stdout 只剩一行裸 `ln:`/`cp:` 错误，
+#   没有汇总，且 `~/.g/` 的 canonical 与 hack 脚本（resolve-models.sh /
+#   resolve-workflow.sh / checkpoint-commit.sh）全不在位 —— 所有 gear skill 的第零步都依赖它们。
+# 触发面不止「权限/只读」：`ln -sf` **不是单一系统调用**（内部 unlink → symlink 两步），
+#   两个 setup.sh 并发铺同一个 HOME 时后者拿到 EEXIST（实测 4 轮命中 2 轮，
+#   一个进程 EXIT:1 + 一行 `ln: …: File exists`）。并发是真实场景：`/g-upgrade`
+#   与手敲 setup 撞上、两个 checkout 同时装。
+# ∴ 全文取向统一为 `install_agents()` 早已用的那一条：**失败降级为 skipped[] + 汇总**，
+#   MUST NOT 让 `set -e` 把整条安装链带崩。[impl-review-fix]
+# ⚠️ 这**不是**放宽所有权守卫：谁能被覆盖仍由上面的 `-L` / marker / readlink 判据决定，
+#   本节只管「判定放行之后，那条命令跑挂了怎么办」。
+
+# ─── Install all skills into one destination ─────────────────
+install_into() {
+  local dest="$1"
+  if ! mkdir -p "$dest" 2>/dev/null; then
+    skipped+=("skills @ $dest — 落点建不出来（被占为普通文件？权限？），未铺设")
+    return 0
+  fi
+  for skill_dir in "$REPO_DIR"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    local skill_name target
+    skill_name="$(basename "$skill_dir")"
+    target="$dest/$skill_name"
+
+    if [ "$IS_WINDOWS" -eq 1 ]; then
+      install_windows_skill "$skill_dir" "$target" "$skill_name"
+    else
+      # Unix: absolute symlink. Only ever replace symlinks or our own marker
+      # copies — never clobber a real directory we don't own (e.g. another
+      # tool's skill of the same name).
+      if [ -e "$target" ] && [ ! -L "$target" ]; then
+        if is_our_marker_copy "$target" || is_empty_dir "$target"; then
+          if ! rm -rf "$target" 2>/dev/null; then
+            skipped+=("$skill_name @ $dest — 旧 marker 拷贝删不掉（只读？占用？），未接管")
+            continue
+          fi
+        else
+          skipped+=("$skill_name @ $dest — 非自有目录，未覆盖")
+          continue
+        fi
+      fi
+      # 既有软链所有权校验：非自属软链不覆盖（同 cleanup_orphans 的 readlink 判据）。
+      # 自属 = ①路径名判据（readlink 目标含 $REPO_NAME 或字面 g-skills）
+      #      ∪ ②内容指纹判据（目标落在一个 g-skills checkout 内，见 is_our_checkout_path）。
+      # ② 不可省：开发 checkout 目录名任意（如 04-g-skills），只有 ① 时运行 checkout
+      # 收不回自己开出的开发窗口——见 is_our_checkout_path 头注释的不对称说明。
+      if [ -L "$target" ]; then
+        local old_link
+        old_link="$(readlink "$target" 2>/dev/null || true)"
+        case "$old_link" in
+          "$REPO_NAME"/*|*/"$REPO_NAME"/*|*/g-skills/*|g-skills/*)
+            # 自属——允许覆盖，下面会打接管提示
+            ;;
+          *)
+            if is_our_checkout_path "$old_link"; then
+              : # 自属（内容指纹）——允许覆盖，下面会打接管提示
+            elif [ -n "$old_link" ]; then
+              skipped+=("$skill_name @ $dest — 非自属软链（→ ${old_link}），未覆盖")
+              continue
+            fi
+            ;;
+        esac
+      fi
+      # old_link 在上面 -L 分支已赋值；target 不存在时为空
+      if ! ln -snf "$REPO_DIR/$skill_name" "$target" 2>/dev/null; then
+        skipped+=("$skill_name @ $dest — 软链建不出来（落点只读？与另一个 setup 并发？），未铺设")
+        continue
+      fi
+      if [ -n "${old_link:-}" ] && [ "$old_link" != "$REPO_DIR/$skill_name" ]; then
+        installed+=("$skill_name @ $dest — 接管：$old_link → $REPO_DIR/$skill_name")
+      else
+        installed+=("$skill_name @ $dest")
+      fi
+    fi
+  done
+}
+
+# 先确认新落点已安装本仓版本，再清理旧落点；同名第三方项不动。
+cleanup_legacy_codex_skills() {
+  local old="$HOME/.codex/skills" new="$HOME/.agents/skills"
+  local entry name link_dest
+  [ -d "$old" ] || return 0
+  for entry in "$old"/*; do
+    name="$(basename "$entry")"
+    if [ -L "$new/$name" ]; then
+      [ "$(readlink "$new/$name")" = "$REPO_DIR/$name" ] || continue
+    elif ! is_our_marker_copy "$new/$name"; then
+      continue
+    fi
+    if [ -L "$entry" ]; then
+      link_dest="$(readlink "$entry")"
+      is_our_checkout_path "$link_dest" || continue
+    elif ! is_our_marker_copy "$entry"; then
+      continue
+    fi
+    if rm -rf "$entry"; then
+      cleaned+=("$name @ $old — 已迁移到 $new")
+    else
+      skipped+=("$name @ $old — 旧安装项清理失败")
+    fi
+  done
+}
+
+# ─── Remove our orphaned links (source skill deleted) ────────
+cleanup_orphans() {
+  local dest="$1"
+  [ -d "$dest" ] || return 0
+  # find 枚举一切一级条目（含悬空软链）——尾斜杠 glob "$dest"/*/ 在 POSIX 语义下
+  # 匹配不到 dangling 软链（因为它不再解析为目录），孤儿清理对真悬空链是死代码。
+  local entry
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    local entry_name="$(basename "$entry")"
+    [ "$entry_name" = "$REPO_NAME" ] && continue
+    # 旧前缀交由迁移函数处理，不能先删掉仍需保留的入口。
+    case "$entry_name" in sdflow-*) continue ;; esac
+
+    local is_ours=0
+    # Symlink pointing into our repo (absolute or relative form)
+    if [ -L "$dest/$entry_name" ]; then
+      local link_dest
+      link_dest="$(readlink "$dest/$entry_name" 2>/dev/null || true)"
+      case "$link_dest" in
+        # 面治：本行原先连 install_into 已有的字面 `g-skills` 兜底都没有（判据更窄）
+        # ⇒ 开发 checkout 装出的链接**连孤儿都清不掉**，是同一个不对称 bug 的另一面。
+        # 此处与 install_into 对齐到同一组判据（路径名 ∪ 内容指纹）。
+        "$REPO_NAME"/*|*/"$REPO_NAME"/*|*/g-skills/*|g-skills/*) is_ours=1 ;;
+        *) is_our_checkout_path "$link_dest" && is_ours=1 ;;
+      esac
+    fi
+    # Marker file (Windows copies)
+    is_our_marker_copy "$entry" && is_ours=1
+
+    # Ours, but the source is no longer an installable skill → clean up.
+    # Two ways that happens; both must be caught, and the criterion MUST mirror
+    # install_into's ("dir contains SKILL.md") — an asymmetric criterion leaves a
+    # gap: a source dir that still EXISTS but is no longer a skill gets neither
+    # installed nor cleaned, so the link lives in the global namespace forever.
+    # (Real case: g-buglist/g-todolist merged into g-issues; their
+    # SKILL.md went away but a leftover scripts/__pycache__/*.pyc kept the dir
+    # alive, so a `-d` check said "source still there" and the links survived.)
+    # Probe SKILL.md THROUGH the link, not at $REPO_DIR/<name>, so valid links
+    # whose source is not a top-level dir (nested sub-skills like
+    # config-setup/config-plugins) are still kept.
+    if [ "$is_ours" -eq 1 ]; then
+      local gone=0
+      if [ -L "$dest/$entry_name" ]; then
+        if [ ! -e "$dest/$entry_name" ]; then
+          gone=1                                        # dangling symlink
+        elif [ ! -f "$dest/$entry_name/SKILL.md" ]; then
+          gone=1                                        # resolves, but no longer a skill
+        fi
+      elif [ ! -f "$REPO_DIR/$entry_name/SKILL.md" ]; then
+        gone=1                                          # Windows marker copy, source gone / no longer a skill
+      fi
+      if [ "$gone" -eq 1 ]; then
+        if ! rm -rf "$dest/$entry_name" 2>/dev/null; then
+          skipped+=("$entry_name @ $dest — 孤儿链清不掉（落点只读？权限？），未清理")
+          continue
+        fi
+        cleaned+=("$entry_name @ $dest")
+      fi
+    fi
+  done < <(find "$dest" -mindepth 1 -maxdepth 1)
+}
+
+# 命令前缀迁移：新入口安装成功后，仅回收可确认自属的旧入口。
+cleanup_sdflow_commands() {
+  local dest="$1" source name old link
+  for source in "$REPO_DIR"/g-*; do
+    [ -f "$source/SKILL.md" ] || continue
+    name="$(basename "$source")"
+    if [ -L "$dest/$name" ]; then
+      [ "$(readlink "$dest/$name")" = "$source" ] || continue
+    elif [ ! -f "$dest/$name/.g-skills" ]; then
+      continue
+    fi
+    old="$dest/sdflow-${name#g-}"
+    if [ -L "$old" ]; then
+      link="$(readlink "$old")"
+      is_our_checkout_path "$link" || continue
+    elif [ ! -f "$old/.sdflow-skills" ]; then
+      continue
+    fi
+    if rm -rf "$old"; then
+      cleaned+=("$(basename "$old") @ $dest — 命令已迁移至 $name")
+    else
+      skipped+=("$(basename "$old") @ $dest — 旧命令清理失败")
+    fi
+  done
+}
+
+# ─── Remove source-owned installs for skills migrated to laodao-skills ──────
+cleanup_migrated_skills() {
+  local dest="$1" skill_name target link_dest
+  [ -d "$dest" ] || return 0
+
+  for skill_name in $MIGRATED_SKILL_NAMES; do
+    target="$dest/$skill_name"
+    [ -e "$target" ] || [ -L "$target" ] || continue
+
+    if [ -L "$target" ]; then
+      link_dest="$(readlink "$target" 2>/dev/null || true)"
+      case "$link_dest" in
+        "$REPO_NAME"/*|*/"$REPO_NAME"/*|*/g-skills/*|g-skills/*)
+          ;;
+        *)
+          # 同 install_into：路径名判据之外再看内容指纹，否则开发 checkout 装出的
+          # 已迁出 skill 链接回收不掉（判据不对称，见 is_our_checkout_path）。
+          is_our_checkout_path "$link_dest" || continue
+          ;;
+      esac
+    elif ! is_our_marker_copy "$target"; then
+      continue
+    fi
+
+    if ! rm -rf "$target" 2>/dev/null; then
+      skipped+=("$skill_name @ $dest — 已迁至 laodao-skills，但旧安装项删不掉（只读？权限？）")
+      continue
+    fi
+    cleaned+=("$skill_name @ $dest — 已迁至 laodao-skills")
+  done
+}
+
+# ─── Agent definitions → ~/.claude/agents/ (D11) ─────────────
+# 【为什么是新写的一份，不能沿用 install_into】
+#   ① install_into 只枚举【顶层目录】且必须含 SKILL.md（上面第 38-39 行），
+#      而 agent 定义是 g-spec/agents/ 下的【散装 .md】—— 进不了那个循环。
+#   ② is_our_marker_copy() 的判据是 `[ -f "$1/.g-skills" ]`：对一个【文件】做
+#      目录拼接，恒 false —— 是路径谬误，不是「保守地判成不是我们的」。
+#   ③ cleanup_orphans 的 `[ ! -d "$REPO_DIR/$entry_name" ]` 对 `xxx.md` 恒真。
+#
+# 【所有权守卫比 skills 那边更严，不是复用】
+#   install_into 对任何同名 symlink 无条件 `ln -snf` 覆盖；install_g 处理
+#   $gear/workflow 时 readlink 的结果也只用于【打印告警】、不作判据。
+#   这里必须 readlink 确认指向本仓才接管 —— 因为 ~/.claude/agents/ 是【全局命名空间】，
+#   任何插件或别的工具都可能在里面放同名定义，覆盖掉就是数据丢失。
+#
+# 【为什么还要一份 installer-owned manifest】[impl-review-fix]
+#   上面两条判据（接管「当前源里还在的名字」+ 清理「悬空的链」）合起来仍漏掉一格：
+#   **旧 checkout 里那个 .md 还在、而新 checkout 已经把它删了** —— 名字不在当前源集合里
+#   ⇒ 进不了接管循环；链指向的文件仍存在 ⇒ 进不了悬空清理。于是一份**已被废弃**、
+#   却仍持有 `Bash`/`Write` 的定义，对这台机器上所有项目继续可见，且永远不会被撤下。
+#   ∴ 每趟把「本安装器铺出去的名字」写进 `$dest/.g-agents`，下一趟撤掉
+#   「manifest 里有、当前源集合里没有」的那些。
+#   🔴 判据 MUST 是「**我们装的**」而不是「路径形状像我们的」：别人仓里同布局的**有效**链
+#     MUST NOT 被碰（那是真实数据丢失，见 cleanup_agent_orphans 的「承认的代价」）。
+#   诚实边界：**首趟**（升级到本版本后的第一次运行）盘上还没有 manifest ⇒ 撤不出任何废弃项；
+#     一趟之后自愈。人手删掉 manifest 亦然。这是可接受的一次性窗口，MUST NOT 声称零窗口。
+AGENTS_MANIFEST=".g-agents"
+
+# Windows 归属判据（copy 模式用）：名字若在【上一趟】写出的 manifest 里 ⇒ 判定为
+# 「这份拷贝是我们自己装的」，允许覆盖/清理；否则一律当第三方文件，绝不碰。
+# 【为什么复用 manifest、不另开一套 marker】skill 的 Windows marker 是「目录里塞一个标记
+# 文件」——skill 装出去的是一整个目录，marker 天然有地方放。agent 是散装 .md，没有目录可
+# 内嵌 marker；manifest 本就是「本安装器上一趟铺了哪些名字」的外部记录，效果等价，没必要
+# 为同一件事再造 N 个散装 marker 文件。
+# 【诚实边界】和 marker 一样，这是外部元数据、不是内容指纹——manifest 被人手删掉，或落点
+# 文件被第三方以同名替换但从未告诉我们，都无法分辨。首趟（尚无 manifest）一律判非自属，
+# 与 skill 侧「未知即不接管」同一取向；一趟之后自愈。
+agent_name_in_manifest() {  # $1=dest $2=name
+  local manifest="$1/$AGENTS_MANIFEST"
+  [ -f "$manifest" ] || return 1
+  grep -qxF "$2" "$manifest" 2>/dev/null
+}
+
+install_agents() {
+  local src_dir="$REPO_DIR/g-spec/agents"
+  local dest="$HOME/.claude/agents"
+
+  # 🔴 【源目录不存在 ≠ 无事可做】—— MUST NOT 在这里 `return 0`。
+  #   「整个 g-spec/agents/ 被删掉」正是**孤儿清理最该跑**的那一刻：上一次 setup 铺出去的
+  #   软链此刻全部悬空，而在源目录上早退会把它们**永久留在全局命名空间里**。
+  #   （实测：早退版本下「删目录 + 重跑新版 setup」⇒ 3 条悬空链原样存活；见
+  #   openspec/changes/add-g-spec/impl-reports/task6-stage3-conditional.md 的回滚演练 C 组。）
+  #   ∴ 铺设循环按 src_dir 有无条件执行，**清理无条件走到底**。
+  #   这也让 design Migration Plan 要求的「先移除 agents 再 revert」有了可执行的落地动作
+  #   （删源目录 + 跑一次新版 setup），无需另造 uninstall 开关。
+
+  # 源目录整体消失（人手删掉 / 被回滚掉一半）⇒ 不铺设，但**清理照跑**。
+  # 当前源集合为空 ⇒ manifest 里记着的全都是废弃项，一并撤下。
+  if [ ! -d "$src_dir" ]; then
+    cleanup_agent_orphans "$dest" ""
+    write_agents_manifest "$dest"
+    return 0
+  fi
+
+  # 落点被占为普通文件/不可写 ⇒ mkdir 失败。set -e 下那会【中止整个 setup.sh】——
+  # 而本函数在 install_g 之前，连 ~/.g/ 的 canonical 与 hack 脚本都跟着装不上，
+  # 用户只看到一行裸 `mkdir:` 错误。与本文件既定取向（外来同名条目 → skip + 汇总报告）一致：
+  # 这里也降级为 skip。
+  mkdir -p "$dest" 2>/dev/null || {
+    skipped+=("agents @ $dest — 落点建不出来（被占为普通文件？权限？），未铺设")
+    return 0
+  }
+
+  local f name target link
+  local -a laid=()          # 本趟真正铺出去的名字 → 写进 manifest（skip 掉的不算）
+  for f in "$src_dir"/*.md; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f")"
+    target="$dest/$name"
+
+    if [ "$IS_WINDOWS" -eq 1 ]; then
+      # Windows：copy + manifest 归属（散装 .md 没有 marker 落点，改用 manifest——见上方
+      # agent_name_in_manifest 的说明）。已存在同名文件、且不在上一趟 manifest 里 ⇒ 判定
+      # 为非本仓拷贝，不接管——与下面 Unix 分支「真实文件不覆盖」同一取向。
+      if [ -e "$target" ] && ! agent_name_in_manifest "$dest" "$name"; then
+        skipped+=("agents/$name @ $dest — 已存在同名文件，非本仓拷贝，未接管")
+        continue
+      fi
+      if ! cp -f "$f" "$target" 2>/dev/null; then
+        skipped+=("agents/$name @ $dest — 拷贝失败（落点只读？磁盘满？），未铺设")
+        continue
+      fi
+      installed+=("agents/$name @ $dest")
+      laid+=("$name")
+      continue
+    fi
+
+    # -e 对悬空软链为 false，故必须 `-e || -L` 才能覆盖「存在」的全部形态
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ ! -L "$target" ]; then
+        skipped+=("agents/$name @ $dest — 已存在真实文件，非本仓软链，未接管")
+        continue
+      fi
+      link="$(readlink "$target" 2>/dev/null || true)"
+      # 【自属判据 = 位置无关的路径后缀，不是当前 checkout 的前缀】
+      #   前缀判据（"$REPO_DIR"/*）只认【当前】checkout ⇒ 从另一个 checkout 跑 setup 时，
+      #   既有的自属链既不接管、也不进孤儿清理 ⇒ 名册裂脑（一条来自 A、其余来自 B），
+      #   而 CLAUDE.md 的 dev/runtime 纪律明写「测完在运行 checkout 重跑 setup【还原】」
+      #   「回滚 = 运行 checkout + 重跑 setup.sh」—— 前缀判据令这两条对 agent 定义静默失效。
+      #   cleanup_orphans 的 */"$REPO_NAME"/* 子串 idiom 在这里也不够：两个 checkout 的
+      #   目录名本就不同（~/.skills/g-skills vs 04-g-skills）。
+      #   ∴ 判据取「链指向某个 g-spec/agents/ 下的同名文件」——无第三方会用这个路径形状。
+      #   ⚠️ MUST NOT 放宽成「是软链就覆盖」：~/.claude/agents/ 是全局命名空间，
+      #   覆盖别人的同名定义就是数据丢失（上面 install_into 的同一条纪律）。
+      case "$link" in
+        */g-spec/agents/"$name") : ;;   # 本仓（任一 checkout）装出去的，可以接管
+        *) skipped+=("agents/$name @ $dest — 软链指向 ${link:-<读不到>}（非本仓），未接管"); continue ;;
+      esac
+    fi
+
+    # 落点存在但不可写（只读目录 / 别人的 ACL）⇒ ln 失败。set -e 下那会【中止整个 setup.sh】，
+    # 与上面 mkdir 那一格同族（mkdir -p 对已存在目录返回 0，控制流会一路走到这里）⇒ 同样降级为 skip。
+    if ! ln -snf "$f" "$target" 2>/dev/null; then
+      skipped+=("agents/$name @ $dest — 软链建不出来（落点只读？权限？），未铺设")
+      continue
+    fi
+    installed+=("agents/$name @ $dest")
+    laid+=("$name")
+  done
+
+  # 顺序不可换：清理先读【上一趟的】 manifest，写入才覆盖成这一趟的。
+  cleanup_agent_orphans "$dest" "$src_dir"
+  write_agents_manifest "$dest" "${laid[@]}"
+}
+
+# 名册快照：把「本安装器这一趟铺出去的名字」原子写进 $dest/.g-agents（每行一个）。
+# 写不成 ⇒ 记一笔并继续：后果只是下一趟识别不出废弃定义（退回本次修复前的行为），
+# MUST NOT 让 `set -e` 把整条安装链带崩（同「set -e 面治」节）。
+write_agents_manifest() {
+  local dest="$1"; shift
+  [ -d "$dest" ] || return 0          # 落点不存在 ⇒ 无名册可言，也不该为它凭空建目录
+  local tmp="$dest/$AGENTS_MANIFEST.tmp$$"
+  if printf '%s\n' "$@" > "$tmp" 2>/dev/null && mv -f "$tmp" "$dest/$AGENTS_MANIFEST" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  skipped+=("agents manifest @ $dest — 写不出来（落点只读？权限？），下一趟识别不出废弃定义")
+}
+
+# 孤儿清理：本仓装出去的软链，源 .md 已删 ⇒ 悬空 ⇒ 清掉。
+# 🔴 **独立成函数、由 install_agents 的两条出路各调一次**——因为「源目录整体没了」
+#   恰恰是它最该跑的那一刻（见 install_agents 开头）。
+cleanup_agent_orphans() {
+  local dest="$1" src_dir="$2"     # $2 = 当前源目录（空串 = 源集合为空）
+  # 落点本身不存在 ⇒ 无链可清（且不该为清理而凭空建目录）。
+  [ -d "$dest" ] || return 0
+
+  # ── (0) manifest 驱动：本安装器上一趟铺过、而**当前源集合里已没有**的名字 ⇒ 撤下 ──
+  #   这一格专治「链仍有效」的废弃定义（旧 checkout 的 .md 还在），下面那一格只管悬空链。
+  #   三道守卫缺一不可：① 名字必须是**裸文件名**（manifest 被写坏时不许变成任意路径删除）；
+  #   ② 落点必须是**本安装器铺出去的形态**（Unix=软链指向本仓布局；Windows=普通文件，
+  #   靠 manifest 本身作归属证据，见 agent_name_in_manifest 的说明）——真实/第三方内容不碰；
+  #   ③（Unix）链指向必须是本仓布局（与接管判据同一条路径形状）。
+  local manifest="$dest/$AGENTS_MANIFEST" mname mtarget mlink
+  if [ -f "$manifest" ]; then
+    while IFS= read -r mname; do
+      [ -n "$mname" ] || continue
+      case "$mname" in */*|.|..) continue ;; esac
+      if [ -n "$src_dir" ] && [ -f "$src_dir/$mname" ]; then continue; fi   # 当前源里还有 ⇒ 不是废弃项
+      mtarget="$dest/$mname"
+      if [ "$IS_WINDOWS" -eq 1 ]; then
+        [ -f "$mtarget" ] && [ ! -L "$mtarget" ] || continue   # 普通文件才是我们拷贝出去的
+      else
+        [ -L "$mtarget" ] || continue
+        mlink="$(readlink "$mtarget" 2>/dev/null || true)"
+        case "$mlink" in
+          */g-spec/agents/"$mname") : ;;
+          *) continue ;;
+        esac
+      fi
+      if ! rm -f "$mtarget" 2>/dev/null; then
+        skipped+=("agents/$mname @ $dest — 废弃定义撤不掉（落点只读？权限？），未清理")
+        continue
+      fi
+      cleaned+=("agents/$mname @ $dest")
+    done < "$manifest"
+  fi
+
+  # 用 find 枚举（而非 glob）：尾斜杠/普通 glob 在 POSIX 语义下匹配不到 dangling 软链。
+  #
+  # 【自属判据 = 与接管判据同一条**路径形状**，但**名字维度必然更宽**（这是设计，不是疏忽）】
+  #   接管只对 `$src_dir/*.md` 里现存的名字（循环源就是它）；清理必须覆盖**已从本仓删掉的
+  #   名字**——那正是「孤儿」的定义。把清理也限定成「名字 ∈ $src_dir」会击穿它的主用途：
+  #   删掉一个 agent 定义后，它的名字恰恰已不在 $src_dir 里，那条悬空链将永远留着。
+  #   （实测：加这条限定 ⇒ test_dangling_link_of_a_deleted_source_is_cleaned 当场红。）
+  #   反过来判据也不能更窄到只认当前 checkout：指向另一 checkout 且源已删的链会永远留着
+  #   ——既不接管也不清理，正是名册裂脑的另一半。
+  #
+  # 【承认的代价】一条指向 `<任意路径>/g-spec/agents/<任意名>.md` 的**悬空**链会被清掉，
+  #   即使那个名字从不属于本仓。判为可接受：① 该路径形状是本仓专有布局；② 只删悬空链——
+  #   目标已不存在，零数据丢失，与 CLAUDE.md「绝不覆盖非本仓库拥有的同名目录」守的「真实内容」
+  #   不是同一物（真实文件与**有效**外来软链一律不碰，见上面的接管守卫与 cleaned 用例）。
+  #
+  # Windows 没有"悬空软链"这个形态——copy 出来的都是普通文件，上面 manifest 驱动的那格
+  # 已覆盖"源已删 + 曾属于我们"的全部废弃情形，这里到此为止。
+  [ "$IS_WINDOWS" -eq 1 ] && return 0
+
+  local entry link2
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    [ -L "$entry" ] || continue
+    link2="$(readlink "$entry" 2>/dev/null || true)"
+    case "$link2" in
+      */g-spec/agents/*.md) : ;;
+      *) continue ;;
+    esac
+    if [ -e "$entry" ]; then continue; fi   # 有效链接，留着
+    # 清不掉（落点只读等）⇒ 与 install_agents 的 mkdir / ln 同一取向：skip + 汇总，
+    # MUST NOT 让 `set -e` 把整个 setup.sh 带崩（本函数的调用点都在 install_g 之前）。
+    if ! rm -f "$entry" 2>/dev/null; then
+      skipped+=("agents/$(basename "$entry") @ $dest — 悬空链清不掉（落点只读？权限？），未清理")
+      continue
+    fi
+    cleaned+=("agents/$(basename "$entry") @ $dest")
+  done < <(find "$dest" -mindepth 1 -maxdepth 1)
+}
+
+# 原子安装单个 hack 文件：先拷到同目录临时文件（含 chmod），再 mv 覆盖。
+# 为什么：调用方（checkpoint-commit.sh 等）可能正在读目标；直接 cp 覆盖会让它读到半截文件。
+# 同目录 mv 是同文件系统 rename，原子。任一步失败返回非零并清掉临时文件，旧文件不动。
+# 返回码而非 exit：调用方按 `if ! install_hack_file` 降级进 skipped[]（set -e 下不中止）。
+install_hack_file() {  # $1=src $2=dest $3=1 则 chmod +x
+  local src="$1" dest="$2" want_exec="$3" tmp
+  tmp="$(dirname "$dest")/.$(basename "$dest").tmp.$$"
+  if ! cp "$src" "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if [ "$want_exec" = 1 ] && ! chmod +x "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  if ! mv -f "$tmp" "$dest" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# ─── gear global home: canonical bundle anchor + hack scripts ──
+# canonical 只接管自属软链/指针（对齐 skills 的所有权守卫）；~/.g 其余视为本工具独占命名空间。
+install_g() {
+  local gear="${G_HOME:-$HOME/.g}"
+  local bundle="$REPO_DIR/g-init/assets/workflow"
+  if ! mkdir -p "$gear/hack" 2>/dev/null; then
+    skipped+=("gear home @ $gear — 建不出来（被占为普通文件？权限？），整段未铺设")
+    return 0
+  fi
+
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    if [ -f "$gear/workflow-path" ]; then
+      local existing_path
+      existing_path="$(cat "$gear/workflow-path" 2>/dev/null || true)"
+      if [ -n "$existing_path" ] && [ "$existing_path" != "$bundle" ]; then
+        case "$existing_path" in
+          */"$REPO_NAME"/*|"$REPO_NAME"/*)
+            ;; # 自属，允许覆盖
+          *)
+            skipped+=("workflow-path @ $gear — 非自属指针（→ ${existing_path}），未覆盖")
+            return 0 ;;  # 跳过整个 Windows workflow-path 段，不影响后续 hack 脚本安装
+        esac
+      fi
+    fi
+    if ! printf '%s\n' "$bundle" > "$gear/workflow-path" 2>/dev/null; then
+      skipped+=("workflow-path @ $gear — 写不进去（只读？磁盘满？），未铺设")
+    else
+      installed+=("workflow-path @ $gear")
+    fi
+  else
+    if [ -e "$gear/workflow" ] && [ ! -L "$gear/workflow" ]; then
+      skipped+=("workflow @ $gear — 真实目录非本工具软链，未接管")
+    else
+      local old_target=""
+      if [ -L "$gear/workflow" ]; then
+        old_target="$(readlink "$gear/workflow" 2>/dev/null || true)"
+      fi
+      # 同 install_into：裸 `ln -snf` 失败即中止全脚本 —— 见「set -e 面治」节。
+      if ! ln -snf "$bundle" "$gear/workflow" 2>/dev/null; then
+        skipped+=("workflow @ $gear — canonical 软链建不出来（只读？与另一个 setup 并发？），未铺设")
+      elif [ -n "$old_target" ] && [ "$old_target" != "$bundle" ]; then
+        installed+=("workflow @ $gear — 接管：$old_target → $bundle")
+      else
+        installed+=("workflow @ $gear")
+      fi
+    fi
+  fi
+
+  # ── 回收已退役的 hack 产物（2026-11 内联精简：voice / 前缀渲染 / token 快照 / 档位机械移除）──
+  # 只删本工具链曾经铺设、且已从源树移除的固定文件名；删不掉只记 skipped，不中止安装。
+  local retired
+  for retired in outside-voice.sh outside-voice-job.py render-review-prefix.sh \
+                 export-codex-collab-evidence.py token_snapshot.py capability-manifest.json; do
+    [ -e "$gear/hack/$retired" ] || continue
+    if rm -rf "$gear/hack/$retired" 2>/dev/null; then
+      cleaned+=("hack/$retired @ $gear — 已退役")
+    else
+      skipped+=("hack/$retired @ $gear — 已退役但删不掉（只读？占用？）")
+    fi
+  done
+  rm -f "$gear/hack/".tmp-capability-manifest.json-* 2>/dev/null || true
+
+  local cap_broken=0
+  local f base
+  for f in "$REPO_DIR/g-init/assets/hack/"*.sh; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    if ! install_hack_file "$f" "$gear/hack/$base" 1; then
+      skipped+=("hack/$base @ $gear — 装不上（落点只读？磁盘满？），未安装")
+      cap_broken=1
+      continue
+    fi
+    installed+=("hack/$base @ $gear")
+  done
+
+  # 脚本要读的数据文件（非 .sh），与运行脚本一起原子安装。
+  for f in "$REPO_DIR/g-init/assets/hack/"*.md; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    if ! install_hack_file "$f" "$gear/hack/$base" 0; then
+      skipped+=("hack/$base @ $gear — 装不上（落点只读？磁盘满？），未安装")
+      cap_broken=1
+      continue
+    fi
+    installed+=("hack/$base @ $gear")
+  done
+
+  # Python helper（评审页、意见处置与路径检查）。装漏 ≠ 静默降级——
+  # 找不到 helper 时功能不可用；与 .sh 同样设 exec 位并计入安装汇总。
+  for f in "$REPO_DIR/g-init/assets/hack/"*.py; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    if ! install_hack_file "$f" "$gear/hack/$base" 1; then
+      skipped+=("hack/$base @ $gear — 装不上（落点只读？磁盘满？），未安装")
+      cap_broken=1
+      continue
+    fi
+    installed+=("hack/$base @ $gear")
+  done
+
+  # 评审页资产目录（模板 + 固定版本 marked + LICENSE）：render-review-page.py 按自身所在目录找它。
+  # 先删后拷，避免旧版文件残留；失败只进 skipped[]，不中止安装（只影响人审节点评审页生成）。
+  local rp_src="$REPO_DIR/g-init/assets/hack/review-page"
+  if [ -d "$rp_src" ]; then
+    if ! rm -rf "$gear/hack/review-page" 2>/dev/null; then
+      skipped+=("hack/review-page @ $gear — 旧目录清不掉（只读？占用？），未安装")
+    elif ! cp -R "$rp_src" "$gear/hack/review-page" 2>/dev/null; then
+      rm -rf "$gear/hack/review-page" 2>/dev/null || true
+      skipped+=("hack/review-page @ $gear — 装不上（落点只读？磁盘满？），未安装")
+    else
+      installed+=("hack/review-page @ $gear")
+    fi
+  else
+    skipped+=("hack/review-page @ $gear — 源目录缺失（${rp_src}），评审页资产未安装")
+  fi
+
+  if [ "$cap_broken" -eq 1 ]; then
+    echo "  ⚠ 部分 hack 文件未装上，见 skipped 汇总——修复后重跑 setup.sh"
+  fi
+}
+
+# [T48] 挑一个 Python 3.7+ 解释器（依赖预检与 retire-hooks 共用）——裸 `python`
+# 可能是 Python2，喂进去会在 f-string 解析期崩（整模块编译先于任何语句执行，脚本内的版本
+# 守卫无从拦截自身 parse），故版本把关只能在调用侧。**逐候选校验、取首个 3.7+**
+# （不只看 python3：若 python3 恰是旧版而 python 合格，仍能用）。
+# 运行脚本使用 capture_output，因此保留 Python 3.7+ 下限。
+_py=""
+for _cand in python3 python; do
+  if command -v "$_cand" >/dev/null 2>&1 \
+     && "$_cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)' >/dev/null 2>&1; then
+    _py="$_cand"; break
+  fi
+done
+
+source "$REPO_DIR/hack/setup-dependencies.sh"
+
+# 安装会改全局 skills、agents 与 canonical；四条通则托管块先在源树 fail-closed 校验，
+# 漂移不得留下半次安装。
+if [ -z "$_py" ]; then
+  echo "错误：安装前通则一致性检查需要 Python 3.7+"
+  exit 1
+fi
+"$_py" "$REPO_DIR/hack/sync_principles.py" --check
+
+for d in "${TARGET_DIRS[@]}"; do
+  install_into "$d"
+  cleanup_migrated_skills "$d"
+  cleanup_orphans "$d"
+done
+cleanup_legacy_codex_skills
+for d in "${TARGET_DIRS[@]}" "$HOME/.codex/skills"; do
+  cleanup_sdflow_commands "$d"
+done
+install_agents
+install_g
+check_dependencies "$_py"
+
+# ─── retire deregistered global hooks (T44) ─────────────────────
+# 死 hook（change-review-stub.py）每次 Bash 调用都 fire 报错，直到被反注册。把自愈焊进
+# 工具链升级路径，令 /g-upgrade 即时清掉，不必等某项目跑 g-init update。
+# fail-safe：绝不中止 setup（清理是尽力而为，非安装必要步）。
+# 解释器已在上面（install_g 之前）挑好——manifest 与本步共用同一个 $_py。
+if [ -z "$_py" ]; then
+  echo "  ⚠ retire-hooks 跳过：PATH 无 Python 3.7+（init.py 需 f-string，非致命）"
+else
+  { "$_py" "$REPO_DIR/g-init/scripts/init.py" retire-hooks ; } || echo "  ⚠ retire-hooks 跳过（非致命）"
+fi
+
+# ─── Summary ─────────────────────────────────────────────────
+# 版本由 git 自报（最近 tag + 领先提交数 + 短 SHA + 是否脏），不维护 VERSION 文件：
+# 手工维护的版本号必然过期（曾停在 v0.10.0 而 HEAD 已领先 391 个提交）。
+version="$(git -C "$REPO_DIR" describe --tags --always --dirty 2>/dev/null || echo "unknown")"
+echo ""
+echo "g-skills ${version} ready → ${TARGET_DIRS[*]}"
+echo ""
+
+if [ ${#installed[@]} -gt 0 ]; then
+  echo "  installed (${#installed[@]}):"
+  for s in "${installed[@]}"; do echo "    ✓ $s"; done
+fi
+
+if [ ${#unchanged[@]} -gt 0 ]; then
+  echo ""
+  echo "  unchanged (${#unchanged[@]}):"
+  for s in "${unchanged[@]}"; do echo "    = $s"; done
+fi
+
+if [ ${#skipped[@]} -gt 0 ]; then
+  echo ""
+  echo "  skipped (${#skipped[@]}):"
+  for s in "${skipped[@]}"; do echo "    ⚠ $s"; done
+fi
+
+if [ ${#cleaned[@]} -gt 0 ]; then
+  echo ""
+  echo "  cleaned orphans (${#cleaned[@]}):"
+  for s in "${cleaned[@]}"; do echo "    ✗ $s"; done
+fi
+
+echo ""
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  echo "  mode: copy (Windows)"
+else
+  echo "  mode: symlink (Unix)"
+fi
