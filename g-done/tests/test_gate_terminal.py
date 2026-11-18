@@ -4,7 +4,7 @@ import sys
 import pytest
 from pathlib import Path
 from test_support.windows import bash_executable, bash_path
-from conftest import commit_all, mkchange, sg_frontmatter
+from conftest import commit_all, fingerprint, mkchange, sg_frontmatter
 from test_gate_preflight import run_gate
 
 
@@ -26,8 +26,15 @@ def mk_archive(repo, name, verify_pass=True):
             source_branch="main", work_branch=work, base_sha=head, merge_target="main")))
     (arch / "proposal.md").write_text("归档\n", encoding="utf-8")
     if verify_pass:
-        (arch / "verify-report.md").write_text(
-            "<!-- ship-gate: verify=PASS -->\n", encoding="utf-8")
+        if head:
+            # 〔B2〕带分支约定的归档要核「交付代码 == verify 锚定的已验证代码」：锚取 HEAD 的
+            # code 域（归档提交只动 openspec/，代码与此一致）。无 HEAD 的旧式用例保留 inline 锚。
+            sha, manifest = fingerprint(repo, head, "code")
+            (arch / "verify-report.md").write_text(
+                sg_frontmatter(sha, manifest, verify="PASS") + "# 验证\n", encoding="utf-8")
+        else:
+            (arch / "verify-report.md").write_text(
+                "<!-- ship-gate: verify=PASS -->\n", encoding="utf-8")
     return arch
 
 

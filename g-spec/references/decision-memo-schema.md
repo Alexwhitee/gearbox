@@ -1,8 +1,8 @@
 # 决策纪要 `decision-memo.md` — 字段 schema 与模板
 
 > 被 `g-spec/SKILL.md` 相位 B/C 引用。**本文是纪要格式的单一源**——小节标题
-> 被 `hack/tests/test_decision_memo_gate.py` 的机械门逐字消费，**改标题 = 改共享字符串**，
-> MUST 先 `grep -rn` 谁在用（不加 `--include` 限定），再同步改门。
+> 被 `/g-done` gate（`g-done/scripts/ship_gate.py` 的纪要检查）与 `hack/tests/test_decision_memo_gate.py`
+> 逐字消费，**改标题 = 改共享字符串**，MUST 先 `grep -rn` 谁在用（不加 `--include` 限定），再同步改门。
 
 ## 1. 落点与身份
 
@@ -74,11 +74,16 @@ print(hashlib.sha256(body.strip().encode()).hexdigest()[:12])
 
 ## 3. 必填与判红
 
+「机械门」= `/g-done` 的 gate（`ship_gate`）在**送设计审之前**对在途 change 的检查：不过 ⇒
+`REFUSE_START`、next=`g-spec`，退回 `/g-spec` 补拷问 / 补定稿。绕过 `/g-spec` 建的 change 同样被拦。
+本仓 `hack/tests/test_decision_memo_gate.py` 另对本仓台账做同口径回归。
+
 | 项 | 判据 | 谁判 |
 |---|---|---|
-| 文件存在 | `openspec/changes/<change>/decision-memo.md` 存在 | **机械门**（pytest） |
-| `## 拍板决策` 非空 | 该 H2 与下一个**同级/更高级** ATX 标题（或 EOF）之间存在非空白、非注释正文；围栏与 HTML 注释块内的标题不算标题 | **机械门**（pytest） |
-| `## 承重约束` 非空 | 同上 | **机械门**（pytest） |
+| 文件存在 | `openspec/changes/<change>/decision-memo.md` 存在 | **机械门**（gate） |
+| `## 拍板决策` 非空 | 该 H2 与下一个**同级/更高级** ATX 标题（或 EOF）之间存在非空白、非注释正文；围栏与 HTML 注释块内的标题不算标题 | **机械门**（gate） |
+| `## 承重约束` 非空 | 同上 | **机械门**（gate） |
+| 已定稿 | frontmatter `decision_hash` 非空（B.8 ⑤ 才写） | **机械门**（gate） |
 | 身份字段匹配当前盘面 | `change` == 当前 change 名 ∧ `branch` == 当前分支 | **指令层**（相位 C 起手，主 session 判） |
 | **`decision_hash` 匹配** | 按上方唯一算法**重算**纪要正文（frontmatter 之外全文）hash，与 frontmatter 比对 —— 不符 = 定稿后被手改 | **指令层**（重算本身是机械的，处置是判断） |
 | **`generated_at` 合理** | 存在、可解析、不落在未来；**其值呈现给人**做陈旧判断（旧运行留下的 memo 可能 change/branch 都对得上，只有时间戳看得出） | **指令层** |
@@ -86,8 +91,9 @@ print(hashlib.sha256(body.strip().encode()).hexdigest()[:12])
 
 > `decision_hash` / `generated_at` 缺失 ⇒ 视为**未定稿**（相位 B 的收敛两步没走完）⇒ 退回相位 B，
 > **不是**身份不匹配。二者处置不同：前者继续做 B，后者要人拍板「复用还是重做」。
+> 草稿纪要（B.1 ④）**只写** `schema_version` / `change` / `branch`，两个定稿字段一律留到 B.8 ⑤。
 
-🔴 **诚实边界**：机械门只证明「纪要存在且这两节非空」，**MUST NOT** 被表述为「证明发生过对抗拷问」。
+🔴 **诚实边界**：机械门只证明「纪要存在、这两节非空、已定稿」，**MUST NOT** 被表述为「证明发生过对抗拷问」。
 拷问是管线的**内建默认路径**，跳过须主动偏离指令——**结构性改善，不是机械保证**。
 
 ## 3.1 口径一致性类 change 的必备约束

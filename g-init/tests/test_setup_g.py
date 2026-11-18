@@ -19,6 +19,14 @@ if os.name == "nt":
 
 REPO = Path(__file__).parent.parent.parent
 
+
+@pytest.fixture(autouse=True)
+def _claude_home_follows_fake_home(monkeypatch):
+    """setup.sh 的 Claude 落点 = ${CLAUDE_CONFIG_DIR:-$HOME/.claude}。本文件各用例用
+    `dict(os.environ, HOME=...)` 起子进程、断言 <假 HOME>/.claude/skills：继承来的
+    CLAUDE_CONFIG_DIR（conftest 的临时目录或用户真实配置）会把安装引到别处，必须摘掉。"""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
 # setup.sh 的汇总首行是 `g-skills <git describe> ready → ...`。版本段不一定以 `v` 开头：
 # 浅克隆（CI 的 actions/checkout 默认 fetch-depth 1）拿不到 tag，describe 退化为短 SHA。
 SUMMARY_LINE = re.compile(r"^g-skills \S+ ready", re.MULTILINE)

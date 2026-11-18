@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from test_support.home import isolated_home_env
 from test_support.windows import bash_executable, bash_path
 
 if os.name == "nt":
@@ -42,10 +43,8 @@ def _shim_dir(tmp_path, fail_marker=""):
 
 
 def _run_setup(home, shim):
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    env = isolated_home_env(home)
     env["PATH"] = f"{shim}{os.pathsep}{env['PATH']}"
-    env.pop("G_HOME", None)
     return subprocess.run([bash_executable(), bash_path(SETUP)], cwd=str(REPO), env=env,
                           capture_output=True, text=True, timeout=300,
                           encoding="utf-8", errors="replace")

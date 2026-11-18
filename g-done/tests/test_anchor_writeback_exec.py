@@ -154,7 +154,7 @@ def test_set_flag_writes_conclusion_and_anchor_atomically(repo):
     commit_all(repo, "seed change")
     aw.main(["--root", str(repo), "--change", "demo",
              "--report", "spec-review-report.md", "--domain", "design",
-             "--set", "design_approved=true"])
+             "--set", "design_approved=true", "--expected-ref", head_sha(repo)])
     state = _read_state(d / "spec-review-report.md")
     assert state.get("design_approved") is True
     assert "reviewed_sha" in state and len(state["reviewed_sha"]) == 64
@@ -177,12 +177,12 @@ def test_dirty_guard_fails_loud_when_git_status_returns_nonzero(repo, capsys, mo
 
     real_git_run = sg._git_run
 
-    def _fake_git_run(root, args, text):
+    def _fake_git_run(root, args, text, **kw):
         # 只在真实脏树守卫会发出的 `status` 调用上注入故障，其余（`rev-parse` 等
         # main() 起手的 git 可用性探测）仍走真实实现，避免探测本身先被误伤而掩盖本用例。
         if args and args[0] == "status":
             return _FakeCompleted()
-        return real_git_run(root, args, text)
+        return real_git_run(root, args, text, **kw)
 
     monkeypatch.setattr(aw.sg, "_git_run", _fake_git_run)
     with pytest.raises(SystemExit) as exc:
@@ -204,10 +204,10 @@ def test_dirty_guard_fails_loud_when_git_status_times_out(repo, capsys, monkeypa
 
     real_git_run = sg._git_run
 
-    def _fake_git_run(root, args, text):
+    def _fake_git_run(root, args, text, **kw):
         if args and args[0] == "status":
             raise sg.GateIndeterminate("git 调用超过 30s 未返回（模拟）", "git-timeout")
-        return real_git_run(root, args, text)
+        return real_git_run(root, args, text, **kw)
 
     monkeypatch.setattr(aw.sg, "_git_run", _fake_git_run)
     with pytest.raises(SystemExit) as exc:
@@ -289,7 +289,7 @@ def test_dirty_paths_rename_out_of_openspec_is_not_excluded(monkeypatch):
     """rename 源在 openspec/、目的落在 code 域 → MUST 被判为 code 域脏改动
     （红先于绿：修复前整行以 `openspec/` 打头就被整条跳过，漏判）。"""
     monkeypatch.setattr(aw, "_git_status_porcelain_raw",
-                         lambda root, pathspecs: "R  openspec/foo.md -> foo.md\n")
+                         lambda root, pathspecs: "R  foo.md\0openspec/foo.md\0")  # -z：目的\0源\0
     dirty = aw._dirty_paths(Path("/nonexistent"), "code", None)
     assert dirty == ["openspec/foo.md -> foo.md"], \
         "目的路径落在 code 域的 rename 被误当 openspec 域内改动跳过（M7）"
@@ -299,6 +299,58 @@ def test_dirty_paths_rename_into_openspec_is_excluded(monkeypatch):
     """反方向：rename 源在 code 域、目的落进 openspec/ → 仍应被排除（code 域视角看，
     结果已不在 code 域内），同一判据两个方向都要对。"""
     monkeypatch.setattr(aw, "_git_status_porcelain_raw",
-                         lambda root, pathspecs: "R  foo.md -> openspec/foo.md\n")
+                         lambda root, pathspecs: "R  openspec/foo.md\0foo.md\0")
     dirty = aw._dirty_paths(Path("/nonexistent"), "code", None)
     assert dirty == []
+
+
+# ══ 设计门批准锚绑定「送审提交」（--expected-ref）══════════════════════════════
+
+def test_design_approval_requires_expected_ref(repo, capsys):
+    d = _write_design_change(repo)
+    commit_all(repo, "seed change")
+    with pytest.raises(SystemExit) as exc:
+        aw.main(["--root", str(repo), "--change", "demo",
+                 "--report", "spec-review-report.md", "--domain", "design",
+                 "--set", "design_approved=true"])
+    assert exc.value.code != 0
+    assert "--expected-ref" in capsys.readouterr().err
+    assert "reviewed_sha" not in (d / "spec-review-report.md").read_text(encoding="utf-8")
+
+
+def test_design_approval_rejects_design_changed_after_review_submission(repo, capsys):
+    d = _write_design_change(repo)
+    commit_all(repo, "送审")
+    submitted = head_sha(repo)
+    (d / "design.md").write_text("# 批准前顺手改了一笔\n", encoding="utf-8")
+    commit_all(repo, "docs: 送审后又改设计")
+    with pytest.raises(SystemExit) as exc:
+        aw.main(["--root", str(repo), "--change", "demo",
+                 "--report", "spec-review-report.md", "--domain", "design",
+                 "--set", "design_approved=true", "--expected-ref", submitted])
+    assert exc.value.code != 0
+    assert "重新送审" in capsys.readouterr().err
+    assert "reviewed_sha" not in (d / "spec-review-report.md").read_text(encoding="utf-8")
+
+
+def test_design_approval_accepts_report_only_commits_after_submission(repo):
+    d = _write_design_change(repo)
+    commit_all(repo, "送审")
+    submitted = head_sha(repo)
+    (d / "spec-review-report.md").write_text("# report\n人已批准\n", encoding="utf-8")
+    commit_all(repo, "报告补记拍板")
+    aw.main(["--root", str(repo), "--change", "demo",
+             "--report", "spec-review-report.md", "--domain", "design",
+             "--set", "design_approved=true", "--expected-ref", submitted])
+    assert _read_state(d / "spec-review-report.md").get("design_approved") is True
+
+
+def test_code_dirty_guard_ignores_openspec_paths_with_spaces(repo):
+    """非 -z 的 porcelain 会给带空格路径加引号（`"openspec/a b.md"`），前缀排除失配 ⇒ 误拒。"""
+    d = mkchange(repo)
+    (d / "code-review-report.md").write_text("# cr\n", encoding="utf-8")
+    (repo / "src.py").write_text("x = 1\n", encoding="utf-8")
+    (d / "a b.md").write_text("v1\n", encoding="utf-8")
+    commit_all(repo, "seed")
+    (d / "a b.md").write_text("v2 未提交\n", encoding="utf-8")
+    assert aw._dirty_paths(repo, "code", None) == []

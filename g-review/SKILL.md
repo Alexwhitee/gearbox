@@ -158,7 +158,9 @@ description: >
 
 ## 评审镜（arg=spec，设计审）
 
-材料：`proposal.md`（What Changes）+ `design.md` 全文 + `specs/` + 被引用的现状代码。命中的 TG 约束 / 画图 / 必填槽叠加进对应镜。
+起手先跑 gate（命令同 g-done 铁律 1）：`REFUSE_START` 且 `next=g-spec`（decision-memo.md 缺失 / 必填小节为空 / 未定稿）→ 停，提示人先完成 `/g-spec` 相位 B，MUST NOT 在没有定稿纪要的 change 上做设计审。
+
+材料：`proposal.md`（What Changes）+ `design.md` 全文 + `specs/` + `tasks.md`（需求 ↔ 任务双向追溯，BASE-17）+ `decision-memo.md`（承重约束与拍板决策：核对产物没有偏离已拍板的决策、被砍候选未被悄悄复活）+ 被引用的现状代码。命中的 TG 约束 / 画图 / 必填槽叠加进对应镜。
 
 | 镜 | 清单/依据 | 视角 |
 |---|---|---|
@@ -171,6 +173,7 @@ description: >
 ## 评审镜（arg=code，代码审）
 
 材料：先用 `branch_context.py show --root . --change {change}` 读本 change 的固定 `base_sha`，再取 `git diff <base_sha> HEAD`（不能用已推进的起始分支替代 SHA；缺约定先核对补录，不猜默认分支）+ `tasks.md` + `tickets.md` + `impl-reports/`。
+gate JSON 带非空 `design_drift`（设计门批准后 design/specs 又被改了）→ 报告结论区 MUST 逐条列出这些路径与改动摘要，scope 审计镜按改后的 specs 判；是否接受这些修订由人决定（见 g-done 🔴），本审不代为背书。
 
 | 镜 | 清单/依据 | 视角 |
 |---|---|---|
@@ -186,18 +189,26 @@ description: >
 
 全程不打断：撞决策写登记区继续跑。
 
+**checkpoint 纪律**（下文每一次 `checkpoint-commit.sh` 之前）：先 `git -c core.quotePath=false status --porcelain`，
+核对工作树**只含本步预期产物**（设计审：本报告 + 本轮对 proposal/design/specs/tasks 的修订；代码审：本报告）；
+有预期外条目（源码改动、测试产物、无关文件、可能的密钥文件）→ **halt 并列清单**，交人处理，MUST NOT 提交。
+普通模式会 `git add -A`，不核就会把它们一并扫进提交与内容指纹。
+
 ## 收尾：设计审（arg=spec）
 
 1. 报告落盘，对 proposal/design/specs 的修订（若有）一并 checkpoint：
    `bash ~/.g/hack/checkpoint-commit.sh "{change}:spec-review" "设计审报告"`
-2. **HARD-GATE**：把报告交人拍板，本轮停在这里。这是全流程唯一人类门。
-3. 人**明确批准**后（同一轮或后续调用皆可），按序：
-   1. 批准前若又改了 proposal/design/specs，先 checkpoint 提交（写锚脚本对未提交的监视集 fail-loud 拒写）；
-   2. 写设计门锚（锚值由脚本计算，MUST NOT 手写）：
-      `python3 <skills_root>/g-done/scripts/anchor_writeback.py --change {change} --report spec-review-report.md --domain design --set design_approved=true`
+   随后 `git rev-parse HEAD` 取完整 `{submitted_ref}`（**送审提交** = 人将要审阅的盘面），写进报告结论区一行
+   「送审提交：`<完整 SHA>`」并再次 checkpoint（只改报告，不在设计监视集内，不改变送审盘面）。
+2. **HARD-GATE**：把报告与送审提交交人拍板，本轮停在这里。这是全流程唯一人类门。
+3. 人**明确批准**后（同一轮或后续调用皆可；跨会话时从报告读回送审提交），按序：
+   1. 送审之后若又改了 proposal/design/specs（哪怕已提交）→ **不能直接写锚**：人批准的不是当前盘面。更新报告说明改了什么 → 按第 1 步重新送审 → 重新交人拍板；
+   2. 写设计门锚（锚值由脚本计算，MUST NOT 手写；脚本核对送审提交与 HEAD 的设计监视集一致，不一致拒写）：
+      `python3 <skills_root>/g-done/scripts/anchor_writeback.py --change {change} --report spec-review-report.md --domain design --set design_approved=true --expected-ref {submitted_ref}`
    3. `bash ~/.g/hack/checkpoint-commit.sh "{change}:design-gate" "设计门拍板"`
 4. 人不批准 → 按意见修订设计、重跑本评审，MUST NOT 写锚。
-5. 批准后又改了 proposal/design/specs → gate 判设计失鲜，须重审 + 重新拍板 + 重写锚。
+5. 批准后又改了 proposal/design/specs → 实现前 gate 判设计失鲜（REFUSE_START）、实现后 gate JSON 带 `design_drift`：须交人重审 + 重新拍板 + 以新的送审提交重写锚；
+   人只是确认这些修订时，在报告补记「批准后修订确认：<路径> + 人的原话」，以当前 HEAD 作送审提交重写锚。
 
 ## 收尾：代码审（arg=code）
 

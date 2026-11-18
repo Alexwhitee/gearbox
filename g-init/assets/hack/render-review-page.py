@@ -61,6 +61,32 @@ class Failure(Exception):
         self.code, self.problem, self.cause, self.fix = code, problem, cause, fix
 
 
+def setup_fix():
+    """「重跑 setup.sh」类修复提示：点名实际的运行 checkout，不写死某个约定目录。
+
+    本脚本装在 <G_HOME>/hack/；setup.sh 在 <G_HOME> 留了指向 <checkout>/g-init/assets/workflow
+    的锚——Unix 是 workflow 软链，Windows 是 workflow-path 指针文件。仓内直跑时
+    <脚本目录>/../workflow 就是 checkout 自己的规则目录。都反查不到才给通用说法。
+    """
+    g_home = Path(__file__).resolve().parent.parent
+    workflow = g_home / "workflow"
+    target = None
+    if workflow.is_symlink():                       # 软链悬空（checkout 被挪走）时也要说出它原指哪
+        target = os.readlink(str(workflow))
+    elif workflow.is_dir():
+        target = str(workflow.resolve())
+    else:
+        try:
+            target = (g_home / "workflow-path").read_text(encoding="utf-8").splitlines()[0].strip()
+        except (OSError, UnicodeDecodeError, IndexError):
+            pass
+    suffix = "/g-init/assets/workflow"
+    target = (target or "").replace("\\", "/").rstrip("/")
+    if target.endswith(suffix) and len(target) > len(suffix):
+        return "在运行 checkout（%s）跑 bash setup.sh" % target[:-len(suffix)]
+    return "在运行 checkout（当初跑 setup.sh 安装本工具的那个 clone）重跑 bash setup.sh"
+
+
 def emit(problem, cause, fix, prog=None):
     """prog 供 record-review-disposition.py 复用本函数，失败行前缀用它自己的程序名。"""
     print("%s: ✗ problem=%s cause=%s fix=%s" % (prog or PROG, problem, cause, fix), file=sys.stderr)
@@ -526,7 +552,7 @@ def load_assets():
             texts.append(p.read_bytes().decode("utf-8"))
         except (OSError, UnicodeDecodeError):
             raise Failure(EXIT_FAIL, "评审页资产缺失：%s" % p, "~/.g/hack/ 未随本版安装",
-                          "在运行 checkout（~/.skills/g-skills）跑 bash setup.sh")
+                          setup_fix())
     return texts[0], texts[1]
 
 
@@ -550,7 +576,7 @@ def render(template, marked, title, docs, saved_notes, dispositions, revisions):
     m = APP_SCRIPT_RE.search(template)
     if not m:
         raise Failure(EXIT_FAIL, "评审页资产缺失：模板缺少 g-app 脚本块", "模板文件损坏或版本不匹配",
-                      "在运行 checkout（~/.skills/g-skills）跑 bash setup.sh")
+                      setup_fix())
     values = {
         "TITLE": html.escape(title, quote=True),
         "DOCS_JSON": json_for_script(docs),

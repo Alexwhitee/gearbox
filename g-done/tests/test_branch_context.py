@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import _git, commit_all, head_sha, mkchange
+from conftest import _git, commit_all, fingerprint, head_sha, mkchange, write_report
 from test_gate_preflight import run_gate
 import branch_context as bc
 
@@ -37,7 +37,11 @@ def start(repo, in_place=False, target=None):
 
 
 def archive(repo, directory):
-    (directory / "verify-report.md").write_text("<!-- ship-gate: verify=PASS -->\n")
+    # 〔B2〕真实流程：代码先提交 → verify 锚定该代码 → 归档提交只动 openspec/。
+    # 归档态交付核对要求 verify 报告带 64 位内容锚，且锚定的就是归档提交里的代码。
+    commit_all(repo, "implementation verified")
+    sha, manifest = fingerprint(repo, head_sha(repo), "code")
+    write_report(directory, "verify-report.md", sha, manifest, verify="PASS")
     destination = repo / "openspec/changes/archive/2026-11-11-demo"
     destination.parent.mkdir(parents=True, exist_ok=True)
     directory.rename(destination)

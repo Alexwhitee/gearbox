@@ -1090,3 +1090,71 @@ def test_change_without_branch_context_cannot_guess_main(tmp_path):
     _write(repo, "openspec/changes/demo/proposal.md", "# legacy\n")
     _, _, err = _run_suite_scope(repo, change="demo", check_exit=6)
     assert "分支约定不可用" in err and "补录" in err
+
+
+# ---------------------------------------------------------------------------
+# 无尾斜杠的域路径若是目录 ⇒ fail-loud（否则目录下文件静默落默认域 = 可能零测试放行）
+# ---------------------------------------------------------------------------
+
+_BARE_DIR_CONFIG = """\
+test-suites:
+  domains:
+    backend:
+      paths: [src]
+      layers:
+        unit: "echo unit-cmd"
+    docs:
+      default: true
+      paths: [docs/]
+      layers: {}
+"""
+
+
+def test_bare_dir_path_committed_at_head_fails_loud(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_config(repo, _BARE_DIR_CONFIG)
+    _write(repo, "src/a.py", "x = 1\n")
+    _commit(repo, "baseline")
+    _git(repo, "checkout", "-b", "feat/x")
+    _write(repo, "src/a.py", "x = 2\n")
+    code, out, err = _run_suite_scope(repo, check_exit=6)
+    assert out == ""
+    assert "problem: 域路径是目录却未以 / 结尾" in err
+    assert "'src'" in err and "'src/'" in err
+
+
+def test_bare_dir_path_new_untracked_dir_fails_loud_in_worktree_mode(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_config(repo, _BARE_DIR_CONFIG)
+    _write(repo, "README.md", "r\n")
+    _commit(repo, "baseline")
+    _git(repo, "checkout", "-b", "feat/x")
+    _write(repo, "src/new.py", "y = 1\n")      # src 只在工作树里存在（未提交）
+    code, out, err = _run_suite_scope(repo, check_exit=6)
+    assert "域路径是目录却未以 / 结尾" in err
+
+
+def test_bare_dir_path_fails_loud_in_commit_range_mode(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_config(repo, _BARE_DIR_CONFIG)
+    _write(repo, "src/a.py", "x = 1\n")
+    _commit(repo, "baseline")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "checkout", "-b", "feat/x")
+    _write(repo, "src/a.py", "x = 2\n")
+    _commit(repo, "change")
+    code, out, err = _run_suite_scope(repo, base=base, head="HEAD", check_exit=6)
+    assert "域路径是目录却未以 / 结尾" in err
+
+
+def test_trailing_slash_dir_path_hits_domain(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_config(repo, _BARE_DIR_CONFIG.replace("paths: [src]", "paths: [src/]"))
+    _write(repo, "src/a.py", "x = 1\n")
+    _commit(repo, "baseline")
+    _git(repo, "checkout", "-b", "feat/x")
+    _write(repo, "src/a.py", "x = 2\n")
+    code, out, err = _run_suite_scope(repo, check_exit=0)
+    data = _parse(out)
+    assert data["hit_domains"] == ["backend"]
+    assert data["layers"] == {"unit": {"quick": "echo unit-cmd", "full": "echo unit-cmd"}}

@@ -1,4 +1,5 @@
 """delta_sync_check.py：归档后核对 delta 已同步进主 spec（T390）。"""
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -80,3 +81,67 @@ def test_rename_name_with_backticks_inside(tmp_path):
 def test_missing_archive_dir_is_usage_error(tmp_path):
     r = _run(tmp_path / "nope")
     assert r.returncode == 2
+
+
+# ── 嵌套 capability：schema 鼓励 `identity/user-auth` 这类分层路径，只扫一层会整条漏检、报假 ✓ ──
+
+def test_nested_capability_is_checked(tmp_path):
+    r = _run(_layout(tmp_path, "## ADDED Requirements\n\n### Requirement: 登录\n\nSHALL\n",
+                     None, cap="identity/user-auth"))
+    assert r.returncode == 1, r.stdout
+    assert "identity/user-auth: 主 spec 不存在" in r.stdout
+
+
+def test_nested_capability_synced_passes(tmp_path):
+    archive = _layout(tmp_path, "## ADDED Requirements\n\n### Requirement: 登录\n\nSHALL\n", None,
+                      cap="identity/user-auth")
+    main = tmp_path / "openspec" / "specs" / "identity" / "user-auth"
+    main.mkdir(parents=True)
+    (main / "spec.md").write_text(_spec("登录"), encoding="utf-8")
+    r = _run(archive)
+    assert r.returncode == 0, r.stdout
+
+
+# ── MODIFIED 正文核对：名字归档前就在主 spec 里，只核名字恒过；须比对归档前（HEAD）的需求块 ──
+
+def _git(root, *args):
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
+                   env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull})
+
+
+def _git_layout(tmp_path, before_body, after_body):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "core.autocrlf", "false")
+    spec = lambda body: f"# cap\n\n## Requirements\n\n### Requirement: 修改\n\n{body}\n\n### Requirement: 其它\n\nx\n"
+    delta = f"## MODIFIED Requirements\n\n### Requirement: 修改\n\n{after_body}\n"
+    archive = _layout(tmp_path, delta, spec(before_body))
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-q", "-m", "before archive")
+    (tmp_path / "openspec" / "specs" / "cap" / "spec.md").write_text(spec(after_body), encoding="utf-8")
+    return archive
+
+
+def test_modified_body_replaced_passes(tmp_path):
+    archive = _git_layout(tmp_path, "系统 SHALL 旧行为。", "系统 SHALL 新行为。")
+    r = _run(archive)
+    assert r.returncode == 0, r.stdout
+
+
+def test_modified_name_only_sync_is_reported(tmp_path):
+    archive = _git_layout(tmp_path, "系统 SHALL 旧行为。", "系统 SHALL 新行为。")
+    # 手动同步漏改正文：主 spec 回到归档前原样
+    (tmp_path / "openspec" / "specs" / "cap" / "spec.md").write_text(
+        "# cap\n\n## Requirements\n\n### Requirement: 修改\n\n系统 SHALL 旧行为。\n\n"
+        "### Requirement: 其它\n\nx\n", encoding="utf-8")
+    r = _run(archive)
+    assert r.returncode == 1, r.stdout
+    assert "MODIFIED 正文与 HEAD（归档前）相同" in r.stdout and "修改" in r.stdout
+
+
+def test_modified_check_skipped_when_main_spec_absent_at_base(tmp_path):
+    # 非 git 目录（或该 ref 无此文件）⇒ 无从比较，只做名字核对，不误报
+    archive = _layout(tmp_path, "## MODIFIED Requirements\n\n### Requirement: 修改\n\nSHALL\n", _spec("修改"))
+    r = _run(archive)
+    assert r.returncode == 0, r.stdout

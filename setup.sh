@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # g-skills setup — install/update skills into BOTH:
-#   - Claude  ~/.claude/skills/
+#   - Claude  ${CLAUDE_CONFIG_DIR:-~/.claude}/skills/
 #   - Codex / Cursor   ~/.agents/skills/
 # Idempotent. Unix: absolute symlink (layout-independent). Windows: copy + marker.
 set -e
@@ -8,14 +8,25 @@ set -e
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_NAME="$(basename "$REPO_DIR")"
 
-# Install destinations (explicit + absolute → independent of where the repo lives)
-TARGET_DIRS=("$HOME/.claude/skills" "$HOME/.agents/skills")
-
 # Platform detection
 IS_WINDOWS=0
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*|Windows_NT) IS_WINDOWS=1 ;;
 esac
+
+# Claude 配置目录：与 Claude Code 本身、g-init 的全局 hook 落点（init.py `_home_claude()`）同一口径——
+# CLAUDE_CONFIG_DIR 优先，缺省 ~/.claude。写死 $HOME/.claude 会让设置了该变量的用户装完
+# 却看不到 /g-* skill（宿主读的是另一个目录）。Windows 上该变量是 Windows 路径，先转成 POSIX 形。
+CLAUDE_HOME="$HOME/.claude"
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  CLAUDE_HOME="$CLAUDE_CONFIG_DIR"
+  if [ "$IS_WINDOWS" -eq 1 ] && command -v cygpath >/dev/null 2>&1; then
+    CLAUDE_HOME="$(cygpath -u "$CLAUDE_CONFIG_DIR")"
+  fi
+fi
+
+# Install destinations (explicit + absolute → independent of where the repo lives)
+TARGET_DIRS=("$CLAUDE_HOME/skills" "$HOME/.agents/skills")
 
 # Counters (entries formatted "skill @ dest")
 installed=()
@@ -405,7 +416,11 @@ cleanup_migrated_skills() {
   done
 }
 
-# ─── Agent definitions → ~/.claude/agents/ (D11) ─────────────
+# ─── Agent definitions → $CLAUDE_HOME/agents/ (D11) ─────────────
+# 【现状：退役清理】g-spec 的三个子代理定义已随子代理派发一起退役，`g-spec/agents/` 已删除。
+#   本段保留的唯一职责是撤下以前铺出去的定义（下面「源目录不存在 ≠ 无事可做」那条路径）：
+#   manifest 记着的名字全是废弃项，本仓布局的悬空链一并清掉；第三方条目一律不碰。
+#   铺设逻辑原样保留——源目录若被恢复（回滚）仍按原所有权守卫工作。
 # 【为什么是新写的一份，不能沿用 install_into】
 #   ① install_into 只枚举【顶层目录】且必须含 SKILL.md（上面第 38-39 行），
 #      而 agent 定义是 g-spec/agents/ 下的【散装 .md】—— 进不了那个循环。
@@ -449,7 +464,7 @@ agent_name_in_manifest() {  # $1=dest $2=name
 
 install_agents() {
   local src_dir="$REPO_DIR/g-spec/agents"
-  local dest="$HOME/.claude/agents"
+  local dest="$CLAUDE_HOME/agents"
 
   # 🔴 【源目录不存在 ≠ 无事可做】—— MUST NOT 在这里 `return 0`。
   #   「整个 g-spec/agents/ 被删掉」正是**孤儿清理最该跑**的那一刻：上一次 setup 铺出去的
@@ -664,20 +679,26 @@ install_g() {
   fi
 
   if [ "$IS_WINDOWS" -eq 1 ]; then
+    # 自属判据与 Unix 侧「接管任一 checkout 的软链」对齐：指针指向本工具布局
+    # （<任一 checkout>/g-init/assets/workflow，含旧名 sdflow-init）或能上溯到本工具 checkout
+    # 即自属——只按当前目录名判会让「从文档推荐的 ~/.skills/g-skills 换到另一个 clone」后
+    # 规则根永远停在旧仓（新 skill 配旧规则）。
+    local pointer_owned=1 existing_path
     if [ -f "$gear/workflow-path" ]; then
-      local existing_path
       existing_path="$(cat "$gear/workflow-path" 2>/dev/null || true)"
       if [ -n "$existing_path" ] && [ "$existing_path" != "$bundle" ]; then
         case "$existing_path" in
-          */"$REPO_NAME"/*|"$REPO_NAME"/*)
+          */"$REPO_NAME"/*|"$REPO_NAME"/*|*/g-init/assets/workflow|*/sdflow-init/assets/workflow)
             ;; # 自属，允许覆盖
           *)
-            skipped+=("workflow-path @ $gear — 非自属指针（→ ${existing_path}），未覆盖")
-            return 0 ;;  # 跳过整个 Windows workflow-path 段，不影响后续 hack 脚本安装
+            is_our_checkout_path "$existing_path" || pointer_owned=0 ;;
         esac
       fi
     fi
-    if ! printf '%s\n' "$bundle" > "$gear/workflow-path" 2>/dev/null; then
+    if [ "$pointer_owned" -eq 0 ]; then
+      # 只跳过指针本身；后面的 hack 脚本照常安装（原先在这里 return 会连 hack 一并跳过）。
+      skipped+=("workflow-path @ $gear — 非自属指针（→ ${existing_path}），未覆盖")
+    elif ! printf '%s\n' "$bundle" > "$gear/workflow-path" 2>/dev/null; then
       skipped+=("workflow-path @ $gear — 写不进去（只读？磁盘满？），未铺设")
     else
       installed+=("workflow-path @ $gear")
@@ -857,4 +878,10 @@ if [ "$IS_WINDOWS" -eq 1 ]; then
   echo "  mode: copy (Windows)"
 else
   echo "  mode: symlink (Unix)"
+fi
+
+# 依赖缺口在安装清单之后再提示一次（check_dependencies 的详细指引在上方「运行依赖预检」段）。
+if [ -n "${G_DEPS_MISSING:-}" ]; then
+  echo ""
+  echo "  ⚠ 运行依赖未齐：${G_DEPS_MISSING} —— 主流程暂不可用，安装指引见上方「运行依赖预检」"
 fi

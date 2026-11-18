@@ -89,5 +89,18 @@ if sane "$CANON"; then
 fi
 
 # 步2：显式降级（反静默守卫）——绝不静默当"本项目无此评审层"
-echo "resolve-workflow: ✗ 全局 workflow bundle 不可达或不完整（G_HOME=${G_HOME}）。skill 应显式降级为通用评审并告警。修复：在运行 checkout（~/.skills/g-skills）跑 bash setup.sh" >&2
+# 修复提示点名实际的运行 checkout：软链（含悬空）/ 指针都指向 <checkout>/g-init/assets/workflow，
+# 反查不到才给通用说法——不写死某个约定目录（checkout 可以在任何位置）。
+anchor=""
+if [ -L "$G_HOME/workflow" ]; then
+  anchor="$(readlink "$G_HOME/workflow" 2>/dev/null || true)"
+elif [ -f "$G_HOME/workflow-path" ]; then
+  anchor="$( (head -n1 "$G_HOME/workflow-path" | tr -d '\r' | sed -e 's/[[:space:]]*$//') 2>/dev/null || true)"
+fi
+anchor="${anchor%/}"
+case "$anchor" in
+  ?*/g-init/assets/workflow) checkout_hint="在运行 checkout（${anchor%/g-init/assets/workflow}）跑 bash setup.sh" ;;
+  *) checkout_hint="在运行 checkout（当初跑 setup.sh 安装本工具的那个 clone）重跑 bash setup.sh" ;;
+esac
+echo "resolve-workflow: ✗ 全局 workflow bundle 不可达或不完整（G_HOME=${G_HOME}）。skill 应显式降级为通用评审并告警。修复：${checkout_hint}" >&2
 exit 2

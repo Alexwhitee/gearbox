@@ -81,6 +81,9 @@ MUST NOT 为低概率、影响小、或完美成本过高的问题反复来回�
   据此激活对应的生成约束 / 领域清单 / 画图 / 模版必填槽（深度由触发决定，不分 S/M/L）。
 - **流程步运行中禁 `/clear`**：g-implement / g-review / g-done 运行中禁 `/clear`；
   `/clear` 只在两处阶段交界用（一→二、二→三），阶段内部控上下文用 `/compact`（workflow.md §三.2）。
+  **唯一例外**：阶段三的 `RUN_CODE_REVIEW` 断点——本会话做过该 change 的实现时，g-done 在此默认停下，
+  请人 `/clear` 后重调 `/g-done {change}`，代码审在 fresh 会话里做（gate 从盘面续跑，不丢状态）；
+  人明确要求本会话继续才不断。其余阶段内部仍禁 `/clear`。
 - **阶段一入口为唯一线性路径**：问题模糊/方向未定先 `opsx:explore` 发散，清晰则直接进 `/g-spec`。
   人可直接触发；**人示意收敛**（如"开搞"/"做吧"/"开 change"）时**模型 SHALL 自动 invoke `/g-spec`**。
   **模型 MUST NOT 自主判断「该开 change 了」**——须有人的示意信号才触发，触发方式的改变不缩减
@@ -89,13 +92,13 @@ MUST NOT 为低概率、影响小、或完美成本过高的问题反复来回�
 - **实现管线唯一 = tickets**：路由至 `g-implement`（tickets 轨），无需判 `impl-pipeline` 键。
 - **INDEX 同步**（仅 toolkit 源仓维护 canonical bundle 时适用）：新增/删 `g-init/assets/workflow/` 下的规则文件后，同步 `openspec/INDEX.md`（消费仓不再持有规则副本，无需同步）。
 
-**配套 skill（workflow 依赖，需先安装）** — 均来自 g-skills（`bash ~/.skills/g-skills/setup.sh` 装到 Claude+Codex）：
+**配套 skill（workflow 依赖，需先安装）** — 均来自 g-skills（在 gear 工具链 checkout 里跑 `bash setup.sh` 装到 Claude+Codex）：
 
 | skill | 在流程中的角色 |
 |---|---|
 | `/g-spec` | 阶段一**产 spec 单一入口**——澄清 → 拷问 → 生成三相位，产四件套 + `decision-memo.md`；人可直接触发，模型按自动触发规则在人示意收敛时自动 invoke |
 | `/g-review spec` | 设计审——内联多镜（广审双镜 + 领域 + 对抗 + 接地读码），产出一份报告交 HARD-GATE 拍板 |
-| `/g-review code` | 代码审——内联多镜（scope 审计 + 领域 + 对抗 + 历史），P0 当场修（上限 2 轮） |
+| `/g-review code` | 代码审——内联多镜（scope 审计 + 领域 + 对抗 + 历史），P0/P1 当场修（上限 2 轮），仍未解决即 blocked |
 | `/g-done` | **闭环**——ship_gate 驱动：实现 → 代码审 → verify（证据锚）→ ADR 同步 → archive → commit → merge |
 
 > 另有记录类配套 skill（按需）：`/g-issues`（bug 缺陷 + todo 改进池，两池一个触发面），

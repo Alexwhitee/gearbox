@@ -7,7 +7,7 @@
 
 | 名称 | 文件 | 作用 |
 |---|---|---|
-| `workflow` | [workflow/workflow.md](./workflow/workflow.md) | 端到端流程总览（内联精简版）：/g-spec 生成 → /g-review spec 设计审 → 设计 GATE → /g-done（gate 驱动：实现+代码审+verify+归档+merge）；阶段内部不用 /clear，仅两处阶段交界用，连续跑到 merge |
+| `workflow` | [workflow/workflow.md](./workflow/workflow.md) | 端到端流程总览（内联精简版）：/g-spec 生成 → /g-review spec 设计审 → 设计 GATE → /g-done（gate 驱动：实现+代码审+verify+归档+merge）；阶段内部不用 /clear，仅两处阶段交界用（唯一例外：本会话做过实现时 g-done 在 RUN_CODE_REVIEW 处默认停下，请人 /clear 后重调 /g-done {change}，代码审在 fresh 会话里做），连续跑到 merge |
 | `trigger-catalog` | [workflow/trigger-catalog.md](./workflow/trigger-catalog.md) | 「按内容条件触发」单一权威源 TG-NN，驱动 约束/领域清单/画图/必填槽 四层 |
 | `ff-generation-constraints` | [workflow/ff-generation-constraints.md](./workflow/ff-generation-constraints.md) | 生成起手强制：FF-0 开分支 + 生成硬约束 D-1~D-6 + 切片建议 |
 | `generation-process` | [workflow/generation-process.md](./workflow/generation-process.md) | 生成过程：发散(explore) + `/g-spec`（澄清→拷问→生成三相位） |

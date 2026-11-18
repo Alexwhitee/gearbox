@@ -155,20 +155,20 @@ CLAUDE.md。**本 skill 的 `assets/workflow/` 是该 bundle 的唯一权威源*
 
 | 模式 | 用于 | 行为 |
 |------|------|------|
-| **init** | 空项目首次铺设 | 建目录骨架 + 拷 bundle + 从模版生成 config.yaml + 注入 INDEX/CLAUDE/AGENTS 托管区块 + 确保全局 FF-0 hook |
-| **update** | 已铺过的项目 | 重拉最新 bundle（覆盖 `workflow/` 托管文件）+ 重注入托管区块 + 幂等确保全局 FF-0 hook；**不动 config.yaml、不覆盖用户内容** |
+| **init** | 空项目首次铺设 | 建目录骨架（含 `openspec/`）+ 拷 bundle + 从模版生成 config.yaml（已存在则只窄改 `schema:` 单键）+ 注入 INDEX/CLAUDE/AGENTS 托管区块 + 确保全局 FF-0 hook |
+| **update** | 已铺过的项目 | 重拉最新 bundle（覆盖 `workflow/` 托管文件）+ 重注入托管区块 + 幂等确保全局 FF-0 hook；config.yaml **只窄改顶层 `schema:` 单键**（CLI ≥ 1.7.0 → `g-spec-driven`；CLI 可解析但 < 1.7.0 → 内置 `spec-driven`；CLI 不可用 → 不改），其余用户内容一字不动 |
 
 ## 怎么用
 
-### 第零步：确认 openspec 已就绪
-若目标项目还没 `openspec/`，先让 OpenSpec 自身初始化核心（`openspec init`），再铺本 bundle。
-（脚本也会自建所需目录与 config，但 `openspec init` 能把核心 schema/CLI 接好。）
+前置：本机装好 OpenSpec CLI 与 mikefarah/yq（`setup.sh` 的运行依赖预检会列出缺口）。
+**不要先跑 `openspec init`**：init.py 自己建 `openspec/` 目录骨架与 config；`openspec init` 在非交互环境要求
+`--tools`，带上它又会装 OpenSpec 自带的 apply/archive 入口，绕开 `/g-implement` 与 `/g-done`。
 
 ### 第一步：跑脚本
 ```bash
 # 在目标项目根目录
-python ~/.claude/skills/g-init/scripts/init.py init      # 首次铺设
-python ~/.claude/skills/g-init/scripts/init.py update    # 重拉最新 bundle
+python "$HOME/.agents/skills/g-init/scripts/init.py" init      # 首次铺设
+python "$HOME/.agents/skills/g-init/scripts/init.py" update    # 重拉最新 bundle
 # 或显式指定项目根
 python <skill>/scripts/init.py init --root /path/to/project
 ```
@@ -185,11 +185,15 @@ python <skill>/scripts/init.py init --root /path/to/project
 2. **合并已存在的 config**（config.yaml 已存在时）：把模版（`openspec/workflow/config.template.yaml`）的
    「通用」context 段 + 全部 `rules:` 并入现有 config.yaml，**保留**用户的「本项目」段和自定义键。
    这步用模型读两份做 YAML 合并，别让脚本硬改（block scalar 易破坏）。
+3. **结构校验（必做）**：上两步改完 config 后跑
+   `python "$HOME/.agents/skills/g-init/scripts/init.py" config-lint --root .`，**必须** `CLEAN`（退出 0）。
+   它校验顶层键不重复、`schema:` 存在、`rules:` 含 proposal/specs/design/tasks 四子键——漏合并 rules 时
+   TG 必填槽会从生成指令里静默消失，这一步就是兜它的。违规按 stderr 逐条修完再跑。
 
 ### 第三步：装配套 skill
-workflow.md 的流程依赖 3 个 gear skill，提示用户安装：
+workflow.md 的流程依赖 3 个 gear skill，提示用户在工具链 checkout 根目录安装：
 ```bash
-bash ~/.skills/g-skills/setup.sh
+bash setup.sh   # 在本工具仓（运行 checkout）根目录执行
 ```
 - `/g-review spec` — 设计审主审 · `/g-review code` — 代码审主审 · `/g-done` — 闭环（verify→archive→commit→merge）
 （记录类按需：`/g-issues`。）
@@ -215,15 +219,9 @@ review 机械层脚本（`tools/`）均**不进消费仓**——skill 运行时�
 
 > **FF-0 hook 是全局的**：装于 `~/.claude/hooks/ff0-branch-guard.py` + 注册进 `~/.claude/settings.json`（**不写项目 `.claude/`**），init/update 幂等确保、跨所有项目生效。
 
-> **子代理权限确认守卫（全局）**：另一个全局 hook 是 `subagent-permission-guard.py`。init/update 把它装进 `~/.claude/hooks/`，并注册到 `settings.json` 的 `PermissionRequest`（matcher `*`）。无人值守的 gear 子代理要权限确认时，它直接拒绝。子代理继续运行，不再挂起到超时。
-> - **判定**：hook 输入里 `agent_id` 是非空字符串，且 `agent_type` 以 `g-` 开头。不看权限模式，不解析命令。
-> - **只拦 gear 子代理**：主 session、第三方子代理、非法输入、hook 内部异常，一律不表态。权限流程照常。
-> - **不区分是否有人在场**：判定只看 `agent_type` 前缀。交互会话里手动派发的 `g-*` 子代理同样会被拒，含 `g-spec-writer` 等非 effort 定义。
-> - **只拒不放**：hook 从不放行任何调用。
-> - **让某类命令在 default 模式下不再被拒**：在 `settings.json` 的 `permissions.allow` 加规则，例如 `"Bash(rm -rf ./build/*)"`。allow 放行的命令不弹确认，也不会走到本 hook。
-> - **持久关闭**：把 `subagent-permission-guard.py` 加进 `init.py` 的 `RETIRED_HOOKS`，再跑 `g-init update`。注册被摘，脚本被删。只手动删脚本或摘注册不够，下次 `update` 会装回。
-> - **已运行的会话**：安装后先按需要重启处理，新开会话才可靠。依据：`--settings` 近似实测中，注册改动未被热加载。真实 `settings.json` 的热加载未实测。
-> - 两个全局 hook 的注册命令都写成 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/<name>`，与落盘目录一致。存量的 FF-0 注册不改写。
+> **注册命令**：写成 `<解释器> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/ff0-branch-guard.py"`，与落盘目录一致。解释器在注册时探测：`python3` 能真跑才用，否则 `python`，再否则 init 当时的解释器绝对路径（Windows 上 `python3` 常是商店占位程序，写死它会让 hook 每次报错、守卫失效）。本工具已有的注册命令与探测结果不同时，init/update 幂等改写；他人注册不动。
+
+> **已退役的子代理权限守卫**：`subagent-permission-guard.py` 已列入 `RETIRED_HOOKS`（流程不再派发子代理）。存量安装在下一次 `init`/`update`（或 `setup.sh` 末尾的 `retire-hooks`）时被摘注册、删脚本。
 
 ## 托管区块（幂等、勿手改区块内）
 
@@ -239,10 +237,11 @@ review 机械层脚本（`tools/`）均**不进消费仓**——skill 运行时�
   别在某个项目里直接改 `openspec/workflow/` 然后忘了回灌（会被下次 update 覆盖）。
 - **不覆盖用户内容**：config.yaml 的本项目段、CLAUDE.md/AGENTS.md 标记区块外的内容，脚本一律不动。
 - **`openspec/rules/` 不在本 bundle**（destructive-commands、task-completion 等是独立通用规则，按需自行加）。
-- **FF-0 硬强制（全局）**：hook 脚本源在本 skill 的 `assets/hooks/ff0-branch-guard.py`，由 `init`/`update` **全局安装**到 `~/.claude/hooks/` + 注册进 `~/.claude/settings.json` 的 PreToolUse.Bash（幂等、跨所有项目，**不写项目 `.claude/`**）。使得在 `master`/`main` 上跑 `openspec new change`（`/opsx:new`、`/opsx:propose`、`/opsx:ff`、`/opsx:onboard`、`/g-spec`（分支 A，相位 B ③）共用此 CLI 入口，**两条分支都拦得住**）被直接拦下，逼先开 feature 分支。想卸载：删 `~/.claude/hooks/ff0-branch-guard.py` + 移除 `~/.claude/settings.json` 中对应 PreToolUse entry（下次 `update` 会装回，持久卸载走 `RETIRED_HOOKS`）。子代理权限确认守卫见上文同名说明，脚本源在 `assets/hooks/subagent-permission-guard.py`。权威定义见 `workflow/ff-generation-constraints.md` FF-0。
+- **FF-0 硬强制（全局）**：hook 脚本源在本 skill 的 `assets/hooks/ff0-branch-guard.py`，由 `init`/`update` **全局安装**到 `~/.claude/hooks/` + 注册进 `~/.claude/settings.json` 的 PreToolUse.Bash（幂等、跨所有项目，**不写项目 `.claude/`**）。使得在 `master`/`main` 上跑 `openspec new change`（`/opsx:new`、`/opsx:propose`、`/opsx:ff`、`/opsx:onboard`、`/g-spec`（分支 A，相位 B ③）共用此 CLI 入口，**两条分支都拦得住**）被直接拦下，逼先开 feature 分支。想卸载：删 `~/.claude/hooks/ff0-branch-guard.py` + 移除 `~/.claude/settings.json` 中对应 PreToolUse entry（下次 `update` 会装回，持久卸载走 `RETIRED_HOOKS`）。权威定义见 `workflow/ff-generation-constraints.md` FF-0。
 - **退役 hook 反注册（自愈）**：`init`/`update` 每次跑时按 `RETIRED_HOOKS` 名单把已退役的全局 hook
   从 `~/.claude/settings.json` 摘除注册 + 删 `~/.claude/hooks/` 里的脚本（外科式、保留他项、fresh 安装 no-op）。
-  当前名单含 `change-review-stub.py`（每目录 review.html stub 生产者，已废弃）。
+  当前名单含 `change-review-stub.py`（每目录 review.html stub 生产者，已废弃）与
+  `subagent-permission-guard.py`（子代理派发已退役）。
 - **退役部署文件清理（自愈）**：`init`/`update` 每次跑时按 `RETIRED_DEPLOY_FILES` 名单清理曾铺进消费仓
   `openspec/` 根、现已废弃的文件——**签名门控删除**（仅当文件内容含 bundle 部署签名时删，防误删用户同名文件）。
   当前名单含查看器根锚 `serve.sh` + `review.html`（HTML 文档查看器已整体移除）；`tools/` 已停止

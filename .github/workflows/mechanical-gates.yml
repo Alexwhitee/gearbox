@@ -16,10 +16,9 @@ on:
 
 jobs:
   gates:
-    # 开关（缺省关）：公开仓每次发布前，build-public.sh ⑤b 已在快照上跑过全量 pytest，
-    # 自动触发本 workflow 是重复。仓库变量 G_MECHANICAL_GATES=true 恢复 push / PR 自动跑；
-    # 手动触发（workflow_dispatch）不看开关，随时可跑。
-    if: ${{ vars.G_MECHANICAL_GATES == 'true' || github.event_name == 'workflow_dispatch' }}
+    # push / PR 默认运行（手动 workflow_dispatch 也可随时跑）。此前本 job 以仓库变量
+    # G_MECHANICAL_GATES 缺省关闭、依赖一个不在本仓的发布脚本代跑全量 pytest ⇒ 公开仓的
+    # push / PR 实际没有任何有效门（历次运行均为 Skipped）。门必须跑在本仓自己的 CI 上。
     # 🔴 两条泳道，**bash 版本是分泳道的理由**〔code-review 对抗镜 C〕：
     # macOS runner 自带 bash **3.2**（GPLv2 末版），ubuntu 是 bash 5.x。本仓有一类缺陷
     # 【只在 3.2 上罢工】——3.2 扫变量名不是 multibyte-aware，`"$var，"` 会把全角标点首字节
@@ -27,7 +26,6 @@ jobs:
     # 逻辑一次都不执行、孤儿照跑）。`test_hack_shell_multibyte_guard.py` 是**静态正则代理**，
     # 对【已知形态】无假阴性，但挡不住一种不匹配该正则的新罢工形态 ⇒ 只有 ubuntu 泳道时，
     # 真实 3.2 运行时行为从未被跑过，而静态门的存在会制造「已机械覆盖」的错觉。
-    # 同理：`timeout`/`gtimeout` 缺失分支在 ubuntu 上恒 skip（自带 coreutils），只有 macOS 跑得到。
     #
     # 🔴 **os × python 刻意不做笛卡尔积**——两条轴各自的理由互不相干，交叉只是重复验证：
     #   os 轴的理由 = bash 3.2 vs 5.x（上面那段），**与 python 版本无关**；
@@ -91,17 +89,7 @@ jobs:
       - name: Install pytest
         run: python -m pip install "pytest>=8"
 
-      # 🔴 macOS runner **不自带 GNU coreutils** ⇒ 无 `timeout`/`gtimeout`。
-      # 没有它，`test_outside_voice_child_lifecycle.py` 的 11 条用例全部 skip
-      # （skip 理由：「需要真 timeout/gtimeout——假 stub 自己也会 background，验不出进程组级联」）——
-      # 而**那 11 条正是本泳道存在的理由**（在真 bash 3.2 上验进程组回收）。
-      # 不装 = 泳道绿但承诺没兑现，即本仓 fix-mechanical-layer-silent-failures 所治的同形病。
-      # 实证：首次加本泳道时 macos 报 1741 passed/15 skipped vs ubuntu 1749/7，差的 8 条即此。
-      - name: Install coreutils (macOS only — 提供 gtimeout)
-        if: runner.os == 'macOS'
-        run: brew install coreutils
-
-      # 🔴 openspec CLI 同属「装了才跑得到」的那一类（与上面 coreutils **同形**）：
+      # 🔴 openspec CLI 属于「装了才跑得到」的那一类：
       # `hack/tests/test_decision_memo_gate.py` 的门 2（「存在态 ≠ 合格态」）用
       # `pytest.mark.skipif(shutil.which("openspec") is None)` 守着 —— 不装它，
       # 门 2 的用例在**全部**泳道恒 skip（本地实测：`env PATH=/usr/bin:/bin` 跑同一文件，
@@ -114,19 +102,21 @@ jobs:
       #
       # **钉死版本**（同第 31 行「MUST NOT 用浮动版本」）：这 6 条用例断言的是
       # **CLI 的具体行为**（`validate --strict` 只覆盖 delta specs），
-      # 浮动到新版会在发布当天无预警变红且历史 job 不可复现。本机实测基线即 1.14.3
-      # 〔T377：1.9.0→1.14.3，test_decision_memo_gate.py 19 条在 1.14.3 下全绿；
-      # 1.14 起 `validate --archived` 只认 `[x]` 为完成，`[~]` 算未完成〕。
-      # node 下限来自该包的 `engines: {node: ">=20.19.0"}`（实查 npm 全局包 package.json）。
+      # 浮动到新版会在发布当天无预警变红且历史 job 不可复现。验证版本 2.1.0
+      # 〔T377：1.9.0→1.14.3；1.14 起 `validate --archived` 只认 `[x]` 为完成，`[~]` 算未完成。
+      # 1.14.3→2.1.0：npm latest 已跳到 2.x，用户照 setup 提示装到的是未验证大版本；本机实测
+      # 1.14.3 / 1.16.0 / 1.17.0 / 2.1.0 下端到端契约（test_openspec_cli_contract.py）与本泳道
+      # openspec 相关用例全绿〕。版本号与 hack/setup-dependencies.sh、README、g-spec 0.1 由该测试机械比对。
+      # node 下限来自 2.1.0 的 `engines: {node: ">=22.20.0"}`（npm view 实查）；用 24 LTS（本机实测 v24.20.0）。
       - name: Setup Node (openspec CLI 的运行时 — 仅这一条泳道)
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
       - name: Install openspec CLI (让 validate 门真跑起来)
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
         run: |
-          npm install -g @fission-ai/openspec@1.14.3
+          npm install -g @fission-ai/openspec@2.1.0
           openspec --version
 
       - name: Gate — 四条通则托管块与真相源一致
@@ -149,7 +139,7 @@ jobs:
       # 评审页 DOM 回归测试（harden-review-page-followups · RVP-16）。
       # 🔴 `!cancelled()`：前面任一 step（如「归档面校验」）红了也照跑，否则前面一红这条真浏览器门就静默不跑。
       # 只铺 ubuntu-latest × 3.12 一条泳道：测的是页面行为，与 os / python 版本无关，铺满只是重复验证；
-      # Node 沿用上面该泳道已装的 22。
+      # Node 沿用上面该泳道已装的 24。
       # `G_REQUIRE_DOM=1`：依赖没装好时判 FAIL，不以 skip 通过。
       # 上面的 `Full test suite` 先于本 step 的 `npm ci`，那时没有 node_modules，该测试在全量步骤里 skip，不重复跑。
       - name: Gate — 评审页 DOM 回归测试

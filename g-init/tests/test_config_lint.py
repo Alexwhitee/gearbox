@@ -1,10 +1,11 @@
 """config-lint（mlh-p3-determ-guards Task 2）：openspec/config.yaml 结构 fail-closed 校验门。
-只校验结构（schema 顶层键存在 / rules 四子键 / model-tiers 枚举 / metrics.enabled 布尔），
+只校验结构（顶层键不重复 / schema 顶层键存在 / rules 四子键 / metrics.enabled 布尔），
 不碰内容文案。手写 stdlib 行扫描（follow anchor_lint.py::read_metrics_enabled 范式，不 import yaml）。
-顶层块（model-tiers / metrics）缺失一律条件化放行（防 mlh-p2 假阳，见 memory
+可选顶层块（metrics）缺失一律条件化放行（防 mlh-p2 假阳，见 memory
 dogfood-blind-spot-source-config）。
+已退役的 model-tiers / effort-tiers 不再校验（残留块被忽略）。
 
-Run: python3 -m pytest g-init/tests/test_config_lint.py -v
+Run: python -m pytest g-init/tests/test_config_lint.py -v
 """
 import os
 import subprocess
@@ -14,10 +15,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-sys.path.insert(0, str(Path(__file__).parent / "fixtures"))
 
-from model_tiers_cases import CASES as MODEL_TIERS_CASES  # noqa: E402  共享畸形输入语料，见该文件 docstring
-from effort_tiers_cases import CASES as EFFORT_TIERS_CASES  # noqa: E402  HAE-11 resolver 共享语料
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
@@ -36,7 +34,7 @@ def _write_config(root: Path, content: str):
 
 def _run_lint(root):
     return subprocess.run(
-        ["python3", str(INIT_PY), "config-lint", "--root", str(root)],
+        [sys.executable, str(INIT_PY), "config-lint", "--root", str(root)],
         capture_output=True, text=True,
 
         encoding="utf-8",
@@ -81,169 +79,37 @@ rules:
         assert "proposal" in r.stderr
 
 
-class TestConfigLintModelTiers:
-    def test_out_of_domain_subkey_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  strong: some-model
-  mid: another-model
-  bogus: nope
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "model-tiers" in r.stderr
-        assert "bogus" in r.stderr
-
-    def test_no_model_tiers_block_passes(self, tmp_path):
-        """条件化放行：无 model-tiers 块 → 0（消费仓正常态，非违规）。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK)
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-
-class TestConfigLintModelTiersFleetKeyed:
-    """add-codex-host-support ADR-8：model-tiers 覆盖按机队分键 `{claude,codex}.{strong,mid,light}`，
-    扁平旧格式 `{strong,mid,light}` 兼容。"""
-
-    def test_nested_fleet_keyed_valid_passes(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  claude:
-    strong: some-claude-model
-    mid: another-claude-model
-  codex:
-    strong: some-codex-model
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-    def test_flat_legacy_valid_passes(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  strong: legacy-model
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-    def test_fleet_leaf_out_of_domain_subkey_nonzero(self, tmp_path):
-        """机队子块下的三级叶子键越域（如 claude.bogus）也须报错——config_lint 是 fail-closed
-        结构门，比 resolve-models.sh（对未知叶子键静默跳过、best-effort）更严格。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  claude:
-    strong: ok-model
-    bogus: nope
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.bogus" in r.stderr
-
-    def test_top_level_out_of_domain_subkey_with_fleet_header_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  claude:
-    strong: ok-model
-  weird:
-    strong: nope
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "weird" in r.stderr
-
-    def test_nested_invalid_model_id_value_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  claude:
-    strong: $(touch pwned)
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.strong" in r.stderr
-
-    def test_flat_invalid_model_id_value_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  mid: `touch pwned`
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        # 反引号在真 YAML 语法下是 "found character that cannot start any token"——整份文档
-        # 解析失败，不再是 config_lint 精确点名到 flat.mid 的语义校验（yq 迁移的既定诊断精度
-        # 代价，见 model_tiers_cases.py 文件头 Task 4 说明）。
-        assert "解析失败" in r.stderr
-
-    def test_empty_value_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  codex:
-    light:
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "codex.light" in r.stderr
-
-
-class TestConfigLintModelTiersSharedFixture:
-    """跨工具一致性守（design D10）：本文件与 test_resolve_models.py 从同一份
-    `fixtures/model_tiers_cases.py` 语料驱动，断言 config_lint 侧的 accept/reject 判据。"""
-
-    def test_shared_cases_match_lint_expectation(self, tmp_path):
-        for case in MODEL_TIERS_CASES:
-            root = tmp_path / case["name"]
-            _write_config(root, VALID_RULES_BLOCK + case["yaml_block"])
-            r = _run_lint(root)
-            if case["lint_clean"]:
-                assert r.returncode == 0, f"{case['name']}: expected clean, got {r.stderr}"
-            else:
-                assert r.returncode != 0, f"{case['name']}: expected violation, got clean"
-                for substr in case["lint_reason_substrs"]:
-                    assert substr in r.stderr, f"{case['name']}: missing {substr!r} in {r.stderr}"
-
-
 class TestConfigLintWholeDocumentParseFailure:
-    """shared-yaml-subset-parser 迁 yq 之后的行为变化（见 impl-report task4-init-yq.md）：
-    旧版行扫描器能局部容错「叶子层漏冒号笔误」，之后合法叶子仍被 attribute+validate
-    （Task 6 复评 r2 Important 的原始诉求）。yq 是真 YAML 解析器——`strong opus`（无冒号的
-    裸标量行，出现在期望是 mapping 的上下文里）是**语法级非法 YAML**
-    （`mapping values are not allowed in this context`），会让**整份 config.yaml**
-    解析失败，不再有「局部容错、后续叶子仍被校验」这件事——`claude.mid` 后续叶子根本读不到，
-    因为文档级读取（`_yq('.', cfg_path)`）本身就失败了。这不是本次改动引入的新缺陷，而是
-    yq 委托的既定代价（spec-review F9/decision-memo：诊断精度下降换取「不手搓 YAML 解析器」）。"""
+    """yq 是真 YAML 解析器：mapping 上下文里的裸标量行（漏冒号笔误）是**语法级非法 YAML**
+    （`mapping values are not allowed in this context`），会让**整份 config.yaml** 解析失败——
+    不再有旧版行扫描器那种「局部容错、后续叶子仍被校验」。这是 yq 委托的既定代价
+    （spec-review F9/decision-memo：诊断精度下降换取「不手搓 YAML 解析器」）。"""
 
     def test_missing_colon_leaf_is_a_whole_document_parse_failure(self, tmp_path):
-        """漏冒号叶子行 MUST 被 yq 判定整份文档语法错误（非零退出 + 通用「解析失败」reason），
-        MUST NOT 静默放行、也不再有精确到 `claude.mid` 的局部诊断。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
-  claude:
-    strong opus
-    mid: bad$value
+        """漏冒号叶子行 MUST 被判定整份文档语法错误（非零退出 + 通用「解析失败」reason），
+        MUST NOT 静默放行。"""
+        _write_config(tmp_path, VALID_RULES_BLOCK + """metrics:
+  enabled true
+  extra: 1
 """)
         r = _run_lint(tmp_path)
         assert r.returncode != 0
         assert "解析失败" in r.stderr, r.stderr
 
 
-class TestModelTiersFromDict:
-    """白盒锁（直测 `_model_tiers_from_dict` 的 entries/bad_headers 归属）——config_lint 只对外
-    报违规存在性，无法从 CLI 侧观察「叶子归给了哪个 fleet」。语法层已交给 yq；本函数只处理
-    yq 已解析出的 dict，故这里直接构造 Python dict 输入（不再需要构造原始 YAML 文本行）。"""
+class TestConfigLintRetiredTierBlocks:
+    """model-tiers / effort-tiers 已随 fan-out 架构退役：存量 config 里残留（哪怕内容早已不合
+    旧校验）也只被忽略，不得让 config-lint 报违规——g-init 第二步要求 lint 必须通过。"""
 
-    @staticmethod
-    def _parse(raw):
-        import init  # scripts/ 已在 sys.path（本文件顶部 line 14）
-        return init._model_tiers_from_dict(raw)
-
-    def test_fleet_and_flat_entries_attributed_correctly(self):
-        entries, bad, bad_headers = self._parse(
-            {"claude": {"strong": "opus", "mid": "sonnet"}, "codex": {"strong": "gpt"}})
-        assert entries == {"claude.strong": "opus", "claude.mid": "sonnet", "codex.strong": "gpt"}
-        assert not bad and not bad_headers
-
-    def test_scalar_fleet_header_is_bad_header_no_crosstalk(self):
-        """`claude: rogue`（fleet 名当标量误用，值非 dict）MUST 记 bad_headers，且 MUST NOT
-        产生任何 `claude.*` entries——锁住 bad_headers 分支（防其成无测试的死码/回归）。"""
-        entries, bad, bad_headers = self._parse(
-            {"codex": {"strong": "codex-real"}, "claude": "rogue"})
-        assert entries == {"codex.strong": "codex-real"}
-        assert any("claude: rogue" in h for h in bad_headers), bad_headers
-
-    def test_none_leaf_value_maps_to_empty_string(self):
-        """yq 对空值叶子（如 `light:`）给出 None——须映射为空串以保留旧版
-        「空值即无效模型ID」语义（`_valid_model_id("")` 恒 False）。"""
-        entries, bad, bad_headers = self._parse({"codex": {"light": None}})
-        assert entries == {"codex.light": ""}
+    def test_leftover_tier_blocks_are_ignored(self, tmp_path):
+        _write_config(tmp_path, VALID_RULES_BLOCK + """model-tiers:
+  claude:
+    strong: "bad value; rm -rf"
+effort-tiers:
+  strong: ultra
+""")
+        r = _run_lint(tmp_path)
+        assert r.returncode == 0, r.stderr
 
 
 class TestConfigLintMetrics:
@@ -267,159 +133,6 @@ context: |
 """ + VALID_RULES_BLOCK.split("\n", 1)[1])
         r = _run_lint(tmp_path)
         assert r.returncode == 0, r.stderr
-
-
-class TestConfigLintEffortTiers:
-    """HAE-11：effort-tiers 顶层块使用 fleet 分键，且不接受扁平旧格式。"""
-
-    def test_no_effort_tiers_block_passes(self, tmp_path):
-        """条件化放行：无 effort-tiers 块 → 0（消费仓正常态，非违规）。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK)
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-    def test_valid_claude_block_passes(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    strong: high
-    mid: medium
-    light: low
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-    def test_all_domain_values_accepted(self, tmp_path):
-        for val in ("low", "medium", "high", "xhigh", "max"):
-            root = tmp_path / val
-            _write_config(root, VALID_RULES_BLOCK + f"""effort-tiers:
-  claude:
-    mid: {val}
-""")
-            r = _run_lint(root)
-            assert r.returncode == 0, f"{val}: {r.stderr}"
-
-    def test_codex_block_accepts_ultra(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  codex:
-    strong: ultra
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode == 0, r.stderr
-
-    def test_claude_ultra_is_rejected(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    strong: ultra
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.strong" in r.stderr
-
-    def test_flat_legacy_format_is_out_of_domain(self, tmp_path):
-        """effort-tiers 无扁平旧格式（与 model-tiers 不同，无历史遗留包袱）——顶层直接写
-        `strong:`/`mid:`/`light:`（无机队头）MUST 报越域，不得被静默接受为 flat 覆盖。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  strong: high
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "effort-tiers" in r.stderr
-        assert "strong" in r.stderr
-
-    def test_fleet_leaf_out_of_domain_subkey_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    strong: high
-    bogus: nope
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.bogus" in r.stderr
-
-    def test_invalid_effort_value_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    mid: turbo
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "effort-tiers" in r.stderr
-        assert "claude.mid" in r.stderr
-
-    def test_model_id_style_value_rejected(self, tmp_path):
-        """effort-tiers 值域是封闭集合，不是 model-tiers 那种自由字符集——一个合法的 model-id
-        字符集字符串（如 `sonnet`）不在 effort 值域内，MUST 被拒绝，不得因两者校验函数
-        混用而误放行。"""
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    strong: sonnet
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.strong" in r.stderr
-
-    def test_empty_value_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude:
-    light:
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "claude.light" in r.stderr
-
-    def test_scalar_fleet_header_nonzero(self, tmp_path):
-        _write_config(tmp_path, VALID_RULES_BLOCK + """effort-tiers:
-  claude: rogue
-""")
-        r = _run_lint(tmp_path)
-        assert r.returncode != 0
-        assert "effort-tiers" in r.stderr
-
-    @pytest.mark.parametrize("case", EFFORT_TIERS_CASES, ids=lambda case: case["name"])
-    def test_shared_effort_fixture_has_matching_lint_outcome(self, tmp_path, case):
-        _write_config(tmp_path, VALID_RULES_BLOCK + case["yaml_block"])
-        r = _run_lint(tmp_path)
-        assert (r.returncode == 0) is case["lint_clean"], r.stderr
-        if not case["lint_clean"]:
-            assert "effort-tiers" in r.stderr
-
-
-class TestEffortTiersFromDict:
-    """白盒锁（直测 `_effort_tiers_from_dict` 的 entries/bad/bad_headers 归属），同
-    `TestModelTiersFromDict` 的测法——语法层交给 yq，本函数只处理已解析出的 dict。"""
-
-    @staticmethod
-    def _parse(raw):
-        import init  # scripts/ 已在 sys.path（本文件顶部）
-        return init._effort_tiers_from_dict(raw)
-
-    def test_claude_entries_attributed_correctly(self):
-        entries, bad, bad_headers = self._parse({"claude": {"strong": "high", "mid": "medium"}})
-        assert entries == {"claude.strong": "high", "claude.mid": "medium"}
-        assert not bad and not bad_headers
-
-    def test_fleet_entries_are_attributed_without_crosstalk(self):
-        entries, bad, bad_headers = self._parse(
-            {"claude": {"strong": "high"}, "codex": {"strong": "ultra"}})
-        assert entries == {"claude.strong": "high", "codex.strong": "ultra"}
-        assert not bad
-        assert not bad_headers
-
-    def test_flat_top_level_keys_go_to_bad_not_entries(self):
-        """与 `_model_tiers_from_dict` 的关键差异：无扁平兼容分支——顶层 `strong`/`mid`/`light`
-        （无 `claude:` 头）MUST NOT 落进 `entries["flat.*"]`，而是落 `bad`。"""
-        entries, bad, bad_headers = self._parse({"strong": "high", "mid": "medium"})
-        assert entries == {}
-        assert bad == {"strong", "mid"}
-
-    def test_scalar_fleet_header_is_bad_header_no_crosstalk(self):
-        entries, bad, bad_headers = self._parse({"claude": "rogue"})
-        assert entries == {}
-        assert any("claude: rogue" in h for h in bad_headers), bad_headers
-
-    def test_none_leaf_value_maps_to_empty_string(self):
-        entries, bad, bad_headers = self._parse({"claude": {"light": None}})
-        assert entries == {"claude.light": ""}
 
 
 class TestConfigLintRegressionBaseline:
@@ -468,7 +181,7 @@ class TestConfigLintGitRootAutoProbe:
     @needs_full_repo
     def test_no_root_flag_probes_git_root(self):
         r = subprocess.run(
-            ["python3", str(INIT_PY), "config-lint"],
+            [sys.executable, str(INIT_PY), "config-lint"],
             capture_output=True, text=True, cwd=str(REPO_ROOT / "g-init"),
 
             encoding="utf-8",
@@ -569,7 +282,7 @@ class TestConfigLintCliSmoke:
         project.mkdir()
 
         r_init = subprocess.run(
-            ["python3", str(INIT_PY), "init", "--root", str(project)],
+            [sys.executable, str(INIT_PY), "init", "--root", str(project)],
             capture_output=True, text=True, env=env,
 
             encoding="utf-8",
@@ -578,7 +291,7 @@ class TestConfigLintCliSmoke:
         assert (project / "openspec" / "config.yaml").is_file()
 
         r_update = subprocess.run(
-            ["python3", str(INIT_PY), "update", "--root", str(project)],
+            [sys.executable, str(INIT_PY), "update", "--root", str(project)],
             capture_output=True, text=True, env=env,
 
             encoding="utf-8",
@@ -586,7 +299,7 @@ class TestConfigLintCliSmoke:
         assert r_update.returncode == 0, r_update.stderr
 
         r_retire = subprocess.run(
-            ["python3", str(INIT_PY), "retire-hooks"],
+            [sys.executable, str(INIT_PY), "retire-hooks"],
             capture_output=True, text=True, env=env,
 
             encoding="utf-8",

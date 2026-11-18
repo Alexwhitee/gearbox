@@ -1,17 +1,15 @@
 ---
 name: g-retro
 description: >
-  只读再生**本项目 OpenSpec change 的成本×价值复盘报告**——从 git 提交历史抽取各 change 的
-  阶段墙钟（成本维），join 归档评审报告（spec-review-report.md / code-review-report.md）里的
-  lens-metric 锚（价值维），聚合出 `openspec/retro/report.md`：per-change 明细、阶段占比、
-  成本双峰、per-镜价值表。**只呈现不决策**——砍镜/降采样/优先级永远人决，本 skill 不做判断、
-  不改动任何 change/spec/issues 内容。专指「openspec change 评审工作流复盘」，
-  与通用工程回顾（gstack `retro`：团队周度复盘会）不是一回事——本 skill 只做这一件事：把 review 工作流自身的
-  成本和产出价值摆到一张报告上给人看。触发：想看"这套评审流程到底值不值"、"哪个镜出的问题多"、
-  "复盘一下最近几个 change 的耗时"、"regenerate/刷新复盘报告"。Trigger with /g-retro。
+  只读再生**本项目 OpenSpec change 的成本复盘报告**——从 git 提交历史抽取各 change 的阶段墙钟
+  （checkpoint 时间线），并按设计门锚（spec-review-report.md 的 design_approved）拆出人类门等待，
+  聚合出 `openspec/retro/report.md`：per-change 明细、阶段占比、成本双峰。**只呈现不决策**——
+  流程怎么调永远人决，本 skill 不做判断、不改动任何 change/spec/issues 内容。专指「openspec change
+  工作流耗时复盘」，与通用工程回顾（gstack `retro`：团队周度复盘会）不是一回事。触发：想看
+  "最近几个 change 各阶段花了多少时间"、"时间都耗在哪"、"regenerate/刷新复盘报告"。Trigger with /g-retro。
 ---
 
-# g-retro — OpenSpec change 成本×价值复盘
+# g-retro — OpenSpec change 成本复盘
 
 <!-- g:principles:start —— 真相源 g-init/assets/hack/skill-principles.md，由 hack/sync_principles.py 注入，勿手改本区块 -->
 ## 🟢 四条通则（所有 gear skill 共用 · 违反即本次运行失败）
@@ -140,26 +138,26 @@ description: >
 
 <!-- g:principles:end -->
 
-把"从 git 历史和归档评审报告里手工拼数字"这件机械活交给脚本，模型只负责判断
-「要不要跑」「跑完怎么呈现待复评区块」——**本 skill 不做任何取舍决策**。
+把"从 git 历史里手工拼耗时数字"这件机械活交给脚本，模型只负责判断「要不要跑」「跑完怎么呈现」——
+**本 skill 不做任何取舍决策**。
 
-> **为什么只读**：成本（墙钟）来自 git 提交时间戳，价值（findings/采纳率/独立发现）来自
-> lens-metric 锚——两者都是既成事实，脚本能确定性算，模型判断反而容易带偏见。
-> 复盘的产出是**呈现**，"某镜该不该砍"永远留给人：这是价值度量回路的
-> user-sovereignty 设计（lens-metric 一脉相承）。
+> **为什么只读**：成本（墙钟）来自 git 提交时间戳与设计门锚——都是既成事实，脚本能确定性算，
+> 模型判断反而容易带偏见。复盘的产出是**呈现**，"流程哪段该改"永远留给人。
 
 脚本：[scripts/retro_report.py](scripts/retro_report.py)。
 
 ---
 
-> 当前流程不再生成 token 快照与 lens 度量锚。下面的用量、跨模型与 per-镜统计仅解释旧归档数据；新 change 缺数据时显示未覆盖，不能当作零成本或零发现。
+> **数据范围**：只统计当前流程确定会产出的两类机器信号——checkpoint 提交时间线、设计门锚。
+> 评审的价值维（逐镜发现数、采纳情况）、token 用量、hr-tg 命中当前流程都不再产出机读锚，
+> 报告不呈现这些维度；MUST NOT 用估算或补零去「补全」它们。
 
 ## 何时用 / 何时不用
 
-- ✅ 想知道最近几个 change 在评审流程上花了多少时间、哪个阶段最重。
-- ✅ 想看 per-镜（lens）出的 findings 数、采纳率、独立发现数——判断某镜是否还值得跑。
+- ✅ 想知道最近几个 change 在各阶段花了多少时间、哪个阶段最重、人类门等了多久。
 - ✅ 归档了新 change 之后，想让 `openspec/retro/report.md` 反映最新数据。
-- ⚠️ 不用于：团队周度工程复盘会（那是 gstack `retro`）；不用于记录单个 bug/todo（`/g-issues`）。
+- ⚠️ 不用于：评估某面评审镜的价值（当前流程无逐镜度量锚）；团队周度工程复盘会（那是 gstack `retro`）；
+  记录单个 bug/todo（`/g-issues`）。
 
 ## 怎么做
 
@@ -167,17 +165,15 @@ description: >
 **显式降级提示**，不要静默跳过或伪造结果：
 
 - 不在 git 仓根：提示用户 `cd` 到项目根，或明确本次跑在哪个仓。
-- 找不到 `python3`：提示先装 Python 3。
+- 找不到 `python3`：提示先装 Python 3（Windows 上 `python3` 不可用时换 `python`）。
 - 找不到脚本本体：提示先跑 `bash setup.sh`（skill 安装未完成或版本落后）。
 
 **再调脚本**（机械活交它）——**必须用绝对 skill 路径调用，禁止 cwd 相对路径**
-（F3 铁律：调用方 cwd 是消费仓根，不是 skill 目录本身；两个 agent 运行时都装了 skill，
-按实际运行环境二选一，找不到就都试一遍）：
+（调用方 cwd 是消费仓根，不是 skill 目录本身；按实际安装位置取第一个存在的）：
 
 ```bash
-python3 ~/.claude/skills/g-retro/scripts/retro_report.py --root "$(git rev-parse --show-toplevel)"
-# Codex 运行时 sibling 路径兜底：
-python3 ~/.agents/skills/g-retro/scripts/retro_report.py --root "$(git rev-parse --show-toplevel)"
+for r in ~/.codebuddy/skills ~/.claude/skills ~/.agents/skills; do [ -f "$r/g-retro/scripts/retro_report.py" ] && { echo "$r"; break; }; done
+python3 <skills_root>/g-retro/scripts/retro_report.py --root "$(git rev-parse --show-toplevel)"
 ```
 
 脚本内部做的事（全部确定性、幂等、无副作用外溢）：
@@ -187,109 +183,33 @@ python3 ~/.agents/skills/g-retro/scripts/retro_report.py --root "$(git rev-parse
 2. 按 checkpoint 提交 subject 的 `checkpoint(<inner>)` 前缀把相邻提交的时间差归入阶段
    （spec-review / code-review / impl / grill / ff / other / done / unknown），累加成
    「阶段墙钟」——口径是**阶段级 elapsed（含人读/拍板/生成时间）**，不是纯 agent 耗时。
-3. 扫每个 change 的 `spec-review-report.md` / `code-review-report.md`，复用
-   `lens_metric_aggregate.py` 的 fence-aware 解析取 lens-metric 锚，按 layer 聚合
-   findings/采纳率/独立发现数；坏文件（IO/解码错误）fail-safe 跳过，不崩报告。
-4. 原子写 `openspec/retro/report.md`：顶部覆盖计数（覆盖 N change / 有真锚 M / 边界
-   不可解析 K——**M 必须显性**，样本量 N 不等于有真实度量锚的 M，实测常见 M ≪ N）、
-   D12 待复评区块、**一览段**（精简指标卡「复盘 change / 总墙钟 / 有真锚 / 待复评镜」+
-   语义化中文段落，把下方表格里的数字提炼成一眼可读的描述——只呈现不决策：只做占比/极值/
-   谁最多的描述性复述，不含「说明/建议/该砍」等解读或决策词；指标卡只放纯计数，不放
-   会掩盖双峰分布真相的平均值）、per-change 明细表（含 hr-tg 双列 + in-progress/archived 状态、
-   `tokens` 列——各会话累计口径的 `out/in/cc/cr` 四计数紧凑串，跨 change 同 session 按 ts
-   排序差分不双计数，存量 change 无 token-log 显式「—」）、阶段占比、成本双峰（总墙钟 vs
-   code-review 占比）、per-镜价值表、**聚合④ per-镜实修率（历史回算）**——窄文法从归档
-   评审报告机械提取 fix-status 三态（实修/未修/defer）与 lens 归属，按 (layer,lens) 输出
-   可判定/未知/覆盖率/实修率，样本量低于阈值（5）标「（参考）」不入砍留依据，宁缺毋假、
-   MUST NOT 猜测归属。
-
-## 历史数据兼容：Codex 用量（v2 行）怎么读
-
-Codex 宿主下（根线程/子线程）与 outside-voice 经 Codex 的 CLI 调用写的是 v2 行，
-与 Claude 宿主的 v1 四计数**分列呈现、不互相差分、不互相相加**——per-change 表
-tokens 列 Claude 段（`out/in/cc/cr`）与 Codex 段（`codex: ...`）各自一段，从不合并成
-一个总分（两者计价不同）。
-
-- **六计数含义**：`input` / `cached_input`（**⊆ input**，缓存命中部分，不是额外量）/
-  `cache_write_input` / `output` / `reasoning_output`（**⊆ output**，推理 token 部分）/
-  `total`。来源事件未提供某键时该键显 `–`（区别于「无锚/无数据」的 `—`）——
-  **`–` 不代表 0，MUST NOT 当 0 读**。
-- **`duration_ms` 含义**：Σ 每 turn 的 `task_complete.timestamp − task_started.timestamp`，
-  **含工具调用与等待时间**，不是纯模型计算耗时——两个耗时相近的 turn，一个全程在等
-  外部工具、一个全程在推理，`duration_ms` 看不出差别。
-- **「Codex 用量覆盖」块**（每次再生都在，紧跟 per-change 表之后）：每个含 v2 行的
-  change 一行，列 `root`/`child`/`cli` 三类行数、`anchor=true` 线程数、`reason` 各值计数、
-  `start-missing`/`counter-reset`/`config_mixed` 数；**该 change 完全没有 v2 行时显示
-  「未声明」**——不要把「未声明」读成「0 行」或「100% 覆盖」，二者含义不同（design
-  「归属与去重」§6）。
-- **`--scan-codex-sessions`（默认关，人工核对用）**：加这个参数会额外只读
-  `~/.codex/sessions/`（或 `$CODEX_HOME/sessions`）下每个 rollout 文件的**首行**
-  `session_meta`，筛出 `cwd` 等于本仓根、`git.branch` 等于 `feat/<change>` 的线程，
-  与该 change token-log 里已出现的 session 集合做差集，列出「日志里没出现过的线程」。
-  **不读正文、不改任何计数、不写任何文件**——默认关时这段代码路径完全不执行，
-  零文件打开。**报告固定注明「跨分支复用线程不可由本扫描判定」**：一个线程如果
-  在别的分支上出生、后来又在本分支被复用，这个扫描判不出来，只能核对「在本分支
-  出生的会话」这一类。用法：
-  ```bash
-  python3 ~/.claude/skills/g-retro/scripts/retro_report.py \
-    --root "$(git rev-parse --show-toplevel)" --scan-codex-sessions
-  ```
-
-### 已知限制 / 残余盲区
-
-- **root + child 合计**：当前实现按 session（线程）分组后，对同一 change 下全部线程
-  （root/child/cli）的六计数**直接求和**。根线程的 `thread_token_usage` 是否已经包含
-  子代理（child）的用量，尚未在本机核验通过（design.md 决策 R4，核验是 task 2.2 的
-  范围，本 task 未包含）——公开源码与 issue #14642 显示「不包含」，置信中但非实测确认。
-  **在该核验通过前，把 retro 呈现的 Codex 六计数合计当作「未排除重复计入风险」的
-  已知限制看待**，不要拿它做精确的成本核算依据。
-- **Claude runner voice 未覆盖**：Codex 宿主经 outside-voice 调用 Claude
-  （`claude -p --output-format text`）不产生任何用量记录——这是显式声明的缺口，
-  **MUST NOT** 用同一线程的其它数字或别的线程的数字去填充或估算它。
-- **done-final 之后仍在跑的子线程**：`--step done-final` 之后才完成的子代理用量不会
-  再被采集，属于既有 archive 期残余盲区的延伸，非本 change 引入的新问题。
-- **写侧降级不计入用量**：`thread-not-found` / `no-usage-events` / `parse-error` /
-  `timeout` / `invalid-thread-id` / `depth-exceeded` 这些 `reason` 只在覆盖块里可见，
-  该线程本身不贡献任何 usage 数字——覆盖块的 reason 计数就是用来暴露这类「有行但
-  没有可信数字」的情况，不要只看 tokens 列的数字而忽略覆盖块。
-
-### 回滚方式
-
-v2 是纯追加的封闭 schema，旧版 reader（不认识 `v=2` 字段）按既有的「`anchor=true` 且
-四计数齐全」校验会让 v2 行自然落在校验失败分支上被跳过（v2 的 usage 没有 v1 要求的
-`cache_read` 键）——**不会误计、不需要数据迁移**。整套回滚只需还原三个文件到本 change
-之前的版本：`g-init/assets/hack/token_snapshot.py`、
-`g-init/assets/hack/outside-voice.sh`、`g-retro/scripts/retro_report.py`
-（+ 本文件），运行 checkout 重跑一次 `bash setup.sh` 让全局 `~/.g/hack/` 与
-skill symlink 落到回滚后的版本；已经写入 token-log.jsonl 的 v2 行留在文件里不用清理。
+3. 人类门拆分：grill 阶段区间 + 设计门拍板区间（spec-review-report.md 首次出现
+   `design_approved: true` 的提交），单列并给出「扣除后」墙钟。
+4. 原子写 `openspec/retro/report.md`：顶部覆盖计数（覆盖 N change / 边界不可解析 K）、
+   **一览段**（精简指标卡「复盘 change / 总墙钟 / 人类门 / 边界不可解析」+ 语义化中文段落——
+   只做占比/极值/谁最重的描述性复述，不含「说明/建议/该砍」等解读或决策词；指标卡只放纯计数，
+   不放会掩盖双峰分布真相的平均值）、per-change 明细表（阶段 Δ 列 + in-progress/archived 状态）、
+   阶段占比、成本双峰（总墙钟 vs code-review 占比）。
 
 ## 跑完之后
 
-**显著呈现报告顶部的 `⚠️ 待复评:` 区块**（不要一句话带过或藏进长回复里）——这是 D12 机械
-契约：某个 (layer, lens, runner, site) 组合的出现轮数 ≥ 10 时会被列出，含义是"这面镜子已经
-跑了足够多轮，值得回头看看它还值不值"。**本 skill 只把这些镜子点出来，不建议保留/降采样/
-淘汰哪一个**——这个判断交给看报告的人，参考 lens-metric 的历史 findings/采纳率数据自己定。
-若该区块显示「无（所有镜出现轮数<10）」，如实呈现这一行，不要因为"没有待复评项"就整段省略——
-省略掉的空箱和 hr-tg 空箱、grill 跳过类判定一样，会让"长期无信号"被静默吞掉。
+如实呈现一览段与 per-change 表；「边界不可解析」的 change（提交数 ≤ 1 或全是跨 change 的 seed 提交）
+照数字呈现，不要省略或用别的 change 的数字估算。
 
 ## report.md 是什么
 
 `openspec/retro/report.md` 是**view-only 再生 + tracked 活文档**——每次跑本 skill 都会
-用当前 git 历史 + 归档评审报告**全量重建**（不是增量 patch），旧内容会被覆盖。这意味着：
+用当前 git 历史**全量重建**（不是增量 patch），旧内容会被覆盖。这意味着：
 
 - 归档了新 change 但还没跑 retro 之前，report.md 是 **stale** 的——这是已知且接受的取舍
-  （不是每次归档都自动触发复盘），report.md 本身不是真相源，**git 历史和归档报告里的
-  lens-metric 锚才是真相源**，report.md 只是它们的一份可读快照。
+  （不是每次归档都自动触发复盘），report.md 本身不是真相源，**git 历史与设计门锚才是真相源**，
+  report.md 只是它们的一份可读快照。
 - 进行中（未归档）的 change 也会被扫进 per-change 表，状态列显式标 `in-progress`——
-  这类行的墙钟/findings 数据会随后续提交继续变化，读报告时按状态列区分「还在动的」和
-  「已经定型的」。
-- 提交 report.md 到 git 是为了让复盘结果可追溯、可 diff——每次重新跑退应视为一次
+  这类行的墙钟数据会随后续提交继续变化，读报告时按状态列区分「还在动的」和「已经定型的」。
+- 提交 report.md 到 git 是为了让复盘结果可追溯、可 diff——每次重新跑应视为一次
   正常的内容刷新提交，不是需要人工核对的异常。
 
 ## 反馈回路免责
 
-本 skill 承接 lens-metric 价值度量回路的**user-sovereignty**原则：聚合和呈现是脚本的活，
-"哪面镜子还留着、要不要降采样、要不要淘汰"是人的活，两者不混在一起。g-retro 本身
-**不做复评判断、不自动砍任何镜**——即便某镜的采纳率长期为 0 或出现轮数远超 10，报告也只
-如实呈现数字和待复评标记，不给出"建议淘汰"之类的结论性语言，避免度量指标被反噬性地
-用来自动优化掉那些短期看似"低效"但长期有价值的镜。
+聚合和呈现是脚本的活，"流程哪段该砍、该加、该改"是人的活，两者不混在一起。g-retro 本身
+**不做复评判断**——即便某阶段长期占比极高，报告也只如实呈现数字，不给出"建议调整"之类的结论性语言。

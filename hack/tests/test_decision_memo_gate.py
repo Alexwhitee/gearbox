@@ -7,6 +7,8 @@
     `ship_gate.py` 的单一源**，MUST NOT 在此手抄一份（见下方 import 处注释）。
     🔴 **诚实边界**：本门只证明「纪要存在且这两节非空」，**MUST NOT** 被表述成
     「证明发生过对抗拷问」。拷问是管线的内建默认路径，不是机械保证。
+    消费仓里真正执行的同类检查在 `/g-done` gate（`ship_gate` 送设计审前，见
+    `g-spec/references/decision-memo-schema.md` §3）；本文件守本仓台账与判据本体。
 
 【门 2 · 存在态 ≠ 合格态】被截断的产物 ⇒ `openspec validate --strict` 判红。
     `openspec status` 的完成判据是**文件存在性**（CLI `dist/core/artifact-graph/state.js:25-29`）
@@ -589,7 +591,8 @@ def test_status_says_done_while_validate_says_red(tmp_path):
     """⭐⭐ 「存在态 ≠ 合格态」的正面证明 —— 同一份盘面，两个判据结论相反。
 
     `status` 只看文件在不在（CLI `artifact-graph/state.js:25-29`）⇒ 半截产物报 done。
-    ∴ SKILL.md 的写后核验 MUST 两个都跑，MUST NOT 只跑 status。
+    ∴ 存在态 MUST NOT 当完成判据：SKILL.md C.4 在 specs 写完后与终审时 MUST 跑 `validate --strict`
+    （更早跑必红——change 尚无 delta，见 `hack/tests/test_g_spec_schema_contract.py`）。
     """
     truncated = "# foo Delta Specification\n\n## ADDED Requirements\n\n### Requirement: Foo SHALL work\nFoo SHALL wo"
     _make_change(tmp_path, spec=truncated)

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from test_support.home import isolated_home_env
 from test_support.windows import bash_executable, bash_path
 
 if os.name == "nt":
@@ -50,9 +51,7 @@ def installed_once(tmp_path_factory):
 
 
 def _run_setup(home):
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    env.pop("G_HOME", None)
+    env = isolated_home_env(home)
     return subprocess.run([bash_executable(), bash_path(SETUP)], cwd=str(REPO), env=env,
                           capture_output=True, text=True, timeout=300, encoding="utf-8", errors="replace")
 
@@ -147,9 +146,7 @@ def test_missing_source_dir_goes_to_skipped_without_aborting(fake_home, tmp_path
     """源 review-page/ 缺失 ⇒ 汇总里有一行 skipped，setup 不中止，其余 hack 脚本照装。"""
     farm = _farm_without_review_page(tmp_path)
     assert not (farm / "g-init" / "assets" / "hack" / "review-page").exists()
-    env = dict(os.environ)
-    env["HOME"] = str(fake_home)
-    env.pop("G_HOME", None)
+    env = isolated_home_env(fake_home)
     r = subprocess.run([bash_executable(), bash_path(farm / "setup.sh")], cwd=str(farm), env=env,
                        capture_output=True, text=True, timeout=300, encoding="utf-8", errors="replace")
     assert r.returncode == 0, r.stdout + r.stderr

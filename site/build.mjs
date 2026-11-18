@@ -17,7 +17,7 @@ const skills=[
  ['g-upgrade','support','更新本机工具链','按实际运行 checkout 的远程执行 ff-only 更新，再刷新安装，避免指令与脚本版本错位。','实际安装来源与 Git 状态','更新后的 skills、全局工具与版本信息','upgrade'],
  ['g-issues','support','缺陷与待办台账','bug 与 todo 分池。一个问题一个文件，记录来源、状态与证据，复用历史 ID。','故障或改进、模块与来源','B/T issue、生成索引、状态历史','records'],
  ['g-adr','support','长期决策与取舍','新建决策、按变更同步、分批体检已有 ADR。格式交给脚本，内容事实依靠读码核对。','决策背景、备选、代码与变更','ADR 文件、格式检查与偏离记录','records'],
- ['g-retro','support','流程复盘','从已有 Git 与报告再生阶段耗时和历史统计。只呈现已有证据，不自动调整流程。','变更历史、评审报告与已有数据','openspec/retro/report.md','records']
+ ['g-retro','support','流程复盘','从 checkpoint 提交时间线与设计门锚再生各阶段耗时。只呈现已有证据，不估算缺失维度，不自动调整流程。','已归档变更的 Git 历史与设计门锚','openspec/retro/report.md','records']
 ];
 const names=(await readdir(root)).filter(name=>name.startsWith('g-')).sort();
 if(names.join()!==skills.map(s=>s[0]).sort().join())throw new Error('Skill catalogue must match repository skills');

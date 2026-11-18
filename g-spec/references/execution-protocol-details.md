@@ -33,19 +33,36 @@ stacking deny 先于 cwd 未判定。
 图已覆盖按图读；图不足则回退**写死超集**：`specs` 读 `proposal.md`+`design.md`，`tasks` 读
 `proposal.md`+`design.md`+`specs/**`，不得跳过；纪要输入。
 
-## 0.3 重入探测：isComplete 三态判定表
+## 0.3 重入探测：isComplete 判定表
 
-| `isComplete` | 纪要 | 态 | 动作 |
+| `isComplete` | 纪要 / 终审锚 | 态 | 动作 |
 |---|---|---|---|
-| `false` | **无** | `B-draft`（草稿都没落成） | 继续 ⇒ **回相位 B**：A 的共识随上下文丢了，先重述锚点纪要再拷问 |
-| `false` | **有** | `B-draft`/`B-finalized`/`C-partial` | 问话附分支名 + 纪要已有 N 条承重约束；继续 ⇒ 跳过 A，核验纪要（C.1）后进入 C |
-| `true` | 任意 | `complete` | **拒绝重生成**，呈现该 change 与出口序列；要改走评审或新 change |
+| `false` | **无**纪要 | `B-draft`（草稿都没落成） | 继续 ⇒ **回相位 B**：A 的共识随上下文丢了，先重述锚点纪要再拷问 |
+| `false` | **有**纪要 | `B-draft`/`B-finalized`/`C-partial` | 问话附分支名 + 纪要已有 N 条承重约束；继续 ⇒ 跳过 A，核验纪要（C.1）后进入 C |
+| `true` | 缺 `checkpoint(g-spec-generate)` 提交，或 change 目录有未提交改动 | `待终审` | 四件套写完、终审/checkpoint 前中断 ⇒ **补跑终审 + checkpoint**；MUST NOT 拒绝，也 MUST NOT 跳过终审直接出口 |
+| `true` | 有 `checkpoint(g-spec-generate)` 且 change 目录干净 | `complete` | **拒绝重生成**，呈现该 change 与出口序列；要改走评审或新 change |
+
+终审锚的判法（两条都要）：
+
+```bash
+git log --format=%s -- openspec/changes/<name>/ | grep -q '^checkpoint(g-spec-generate)'
+test -z "$(git status --porcelain -- openspec/changes/<name>/)"
+```
+
+🔴 `isComplete` 只看文件存在（空 design.md 也算 done）⇒ **MUST NOT 单凭 `isComplete=true` 判 complete**：
+那会把「写完最后一份就崩溃」的 change 当成已终审，proposal/design/tasks 未截断、design↔specs 一致性
+这些只有终审能核的项被整体跳过。
 
 🔴 **MUST NOT 拿「有没有 `decision-memo.md`」当探测前提**——B 起手建完目录到第一次落盘之间崩溃，
 留下的正是第一行那种**没有纪要**的在途 change；**MUST NOT 只探 `isComplete=false`**，那让
 `complete` 只剩一句声明、没有对应的操作判定。
 
-## C.4 已知限制：CLI 1.5.0 `validate --strict` 覆盖边界
+## C.4 已知限制：`validate --strict` 覆盖边界与时点
 
-CLI 1.5.0 的 `validate --strict` 只校验 `specs/*/spec.md` delta；其余三份（proposal / design /
-tasks）截断仍可能双绿，只能靠终审读回判定，MUST NOT 声称它能挡住半截 design.md。
+CLI 1.5.0 起（2.1.0 实测仍然）的 `validate --strict` 只校验 `specs/*/spec.md` delta；其余三份
+（proposal / design / tasks）截断仍可能双绿，只能靠终审读回判定，MUST NOT 声称它能挡住半截 design.md。
+
+同一原因决定了它的**跑的时点**：change 在 specs 写出之前没有任何 delta，`validate --strict` 必报
+「Ensure change has deltas」——写完 proposal / design 就跑它，只会把合格产物误判为未完成（重试死循环
+或被迫绕过）。∴ 每份产物写后只判 `status`；`validate --strict` 只在 specs 写完后与终审复核时跑，
+`skip_specs: true` 的 change 只在终审跑。

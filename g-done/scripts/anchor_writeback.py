@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""anchor_writeback.py — g-ship 权威写锚脚本（`ship_gate.py` 的 sibling，只写不判）。
+"""anchor_writeback.py — g-review / g-done 权威写锚脚本（`ship_gate.py` 的 sibling，只写不判）。
 
 〔sweep-pool-debt D3/D4〕producer 写锚与 `ship_gate.py` 验锚跑**同一份指纹函数**（`import
 ship_gate` 复用 `ls_tree_map` / `design_pathspecs` / `change_base` / `fingerprint_entries`），
@@ -10,6 +10,9 @@ sha256，64-hex）+ `reviewed_manifest`（manifest 规范字节流的单行 base
 字段、再补跑本脚本，中间态会被 `ship_gate.py` 判「结论已落但锚缺」而 fail-closed。
 
 **代码域 PASS**：必须提供检查前捕获的不可变提交 --expected-ref；其源码内容必须与当前盘面一致，报告提交可以推进 HEAD，但不得夹带随后改动的源码。
+
+**设计门批准**（`--set design_approved=true`）：必须提供 --expected-ref = 设计审报告记录的「送审提交」；
+送审提交与 HEAD 的设计监视集（proposal/design/specs）内容必须一致——送审后再改设计须重新送审。
 
 **判官只读语义不破**：`ship_gate.py` 保持零副作用；一切写操作收敛在本文件。
 
@@ -160,10 +163,13 @@ def _compute_domain_entries(root, change, domain):
 
 
 def _git_status_porcelain_raw(root, pathspecs):
-    """`git status --porcelain` 原样输出（**不** `.strip()`）——`ship_gate.run_git` 会
+    """`git status --porcelain -z` 原样输出（**不** `.strip()`）——`ship_gate.run_git` 会
     `.strip()` 整段输出，porcelain 每行开头的状态码可能是空格（如 ` M path`），
-    整段 strip 会啃掉首行状态码的首字符、致后续 `line[3:]` 切分错位。本函数专供
-    脏树守卫使用，原样保留每行前导字符。
+    整段 strip 会啃掉首行状态码的首字符、致后续切分错位。本函数专供脏树守卫使用。
+
+    `-z` 的理由：非 `-z` 形态会给含空格/非 ASCII 的路径加引号（`"openspec/a b.md"`），
+    以 `openspec/` 前缀排除时匹配不上 ⇒ 被误当 code 域脏改动拒写。`-z` 关闭引号转义，
+    记录以 NUL 终止；rename/copy 记录为 `XY 目的\\0源\\0`（无 ` -> `、顺序反转）。
 
     〔impl-review-fix C1/H3〕改走 `ship_gate._git_run` 单出口（timeout + env 清理 +
     环境级失败映射，与本文件其余 git 调用同一条纪律），MUST NOT 再裸调 `subprocess.run`
@@ -173,7 +179,7 @@ def _git_status_porcelain_raw(root, pathspecs):
     干净」从而放行写锚，与本文件头注释「脏树守卫」的 fail-loud 立场矛盾（也与 ship_gate.py
     全篇「读失败 ≠ 空」的 ADR-4 纪律不一致）。
     """
-    args = ["status", "--porcelain"]
+    args = ["status", "--porcelain", "-z"]
     if pathspecs:
         args += ["--", *pathspecs]
     try:
@@ -194,29 +200,32 @@ def _dirty_paths(root, domain, dirty_pathspecs):
         out = _git_status_porcelain_raw(root, dirty_pathspecs)
     else:
         out = _git_status_porcelain_raw(root, ())
+    tokens = out.split("\0")
     dirty = []
-    for line in out.splitlines():
-        if not line:
+    i = 0
+    while i < len(tokens):
+        record = tokens[i]
+        i += 1
+        if not record:
             continue
-        # `git status --porcelain` 每行前两字符是状态码（可含空格）、随后一个空格、再是路径
-        # （rename/copy 形态为 `old -> new`）。
-        path = line[3:] if len(line) > 3 else line
-        # 〔impl-review-fix M7〕domain 排除判定 MUST 按**目的路径**（rename 箭头之后那段），
-        # MUST NOT 按整行字面量：整行形如 `openspec/old.md -> new.md` 时，旧写法见整行以
-        # `openspec/` 打头就整条 `continue` 跳过——而该 rename 的**目的**其实落在 code 域
-        # （从 openspec 移出到 code 域），真实结果是一个该被判脏的 code 域文件，却被误当
-        # "仍在 openspec 域内、与 code 域无关"而漏判。取箭头后半段再判，方向相反的
-        # rename（code 域移入 openspec）也能正确排除，同一判据两个方向都对。
-        check_path = path.split(" -> ", 1)[-1] if " -> " in path else path
-        if domain == "code" and (check_path == "openspec" or check_path.startswith("openspec/")):
+        # 记录 = 两字符状态码 + 一个空格 + 路径；rename/copy 的源路径是紧随其后的下一个 NUL 段。
+        status, path = record[:2], record[3:]
+        source = None
+        if "R" in status or "C" in status:
+            source = tokens[i] if i < len(tokens) else ""
+            i += 1
+        # 〔impl-review-fix M7〕domain 排除判定 MUST 按**目的路径**：从 openspec 移出到
+        # code 域的 rename 是 code 域脏改动；反向（code 域移入 openspec）结果已不在 code 域，
+        # 应排除——同一判据两个方向都对。
+        if domain == "code" and (path == "openspec" or path.startswith("openspec/")):
             continue
-        dirty.append(path)
+        dirty.append(f"{source} -> {path}" if source else path)
     return dirty
 
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        description="g-ship 权威写锚脚本：原子写入内容锚（+ 可选结论字段）")
+        description="g-review / g-done 权威写锚脚本：原子写入内容锚（+ 可选结论字段）")
     p.add_argument("--root", default=None)
     p.add_argument("--change", required=True)
     p.add_argument("--report", required=True,
@@ -226,7 +235,8 @@ def main(argv=None):
                     metavar="field=value", help="同批写入的结论字段，可重复")
     p.add_argument("--allow-dirty", action="store_true",
                     help="显式越权：跳过监视集脏树守卫（越权留痕，见本文件头注释）")
-    p.add_argument("--expected-ref", help="代码检查开始前记录的完整 commit OID；写代码域 PASS 必填")
+    p.add_argument("--expected-ref", help="代码域：检查开始前记录的完整 commit OID（写 PASS 必填）；"
+                                          "design 域：设计审报告记录的送审提交（写 design_approved=true 必填）")
     a = p.parse_args(argv)
 
     # 〔impl-review-fix H4〕`sg.run_git` 内部 `_git_run` 在 git 超时/不可用（`TimeoutExpired`/
@@ -313,6 +323,27 @@ def main(argv=None):
             _fail(f"无法读取检查基准：{exc.cause}")
         if expected_digest != digest:
             _fail("源码已偏离 --expected-ref 的已检查内容，拒绝写入 PASS；重新评审/验证后再写锚")
+
+    # 设计门批准锚 MUST 绑定人实际看过的盘面：`--expected-ref` = 设计审报告记录的「送审提交」。
+    # 送审之后再改 proposal/design/specs（哪怕已提交）⇒ 人批准的不是当前盘面，拒写并要求重新送审；
+    # 否则「批准前顺手改一笔再 checkpoint」会被一并背书。
+    if a.domain == "design" and (new_state.get("design_approved") is True or a.expected_ref):
+        if not a.expected_ref:
+            _fail("设计门批准必须提供 --expected-ref（设计审报告记录的送审提交完整 OID），"
+                  "不得在写锚时补取 HEAD")
+        if not sg._is_full_oid(a.expected_ref):
+            _fail("--expected-ref 必须是送审时记录的完整 commit OID，不能是 HEAD 或分支名")
+        try:
+            rc, _ = sg.run_git_rc(root, "cat-file", "-e", f"{a.expected_ref}^{{commit}}")
+            if rc != 0:
+                _fail("--expected-ref 对应提交不存在，拒绝写入设计门锚")
+            specs = sg.design_pathspecs(sg.change_base(a.change))
+            _, expected_digest = sg.fingerprint_entries(sg.ls_tree_map(root, a.expected_ref, specs))
+        except sg.GateIndeterminate as exc:
+            _fail(f"无法读取送审基准：{exc.cause}")
+        if expected_digest != digest:
+            _fail("送审提交之后 proposal/design/specs 又被改动，人批准的不是当前盘面——"
+                  "更新设计审报告并重新送审拍板，拒绝写入设计门锚")
 
     shipgate_lines = ["ship-gate:"]
     for field in _FIELD_ORDER:

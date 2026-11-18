@@ -166,26 +166,33 @@ description: >
    `python3 <skills_root>/g-done/scripts/ship_gate.py --change {change} --root "$(git rev-parse --show-toplevel)"`
    首行人读摘要照抄进对话，JSON 的 `verdict` / `next` / `done_tasks` 供判定。
 2. **熔断**：同一 verdict 连续重跑 2 次仍无新产物 → 停下问人，MUST NOT 无限循环。
+   判据由执行者比对**连续两次 gate 输出**（verdict + reason + 相关报告 frontmatter 结论 + 新提交）——
+   gate 不提供机械熔断，HEAD 前移本身不算进展（例如只提交了无关文件）。
 3. **git**：只在本 skill 与各步 checkpoint 中提交；**不自动 push**。
 
 ## 链序（gate verdict → 动作）
 
 | verdict | 动作 |
 |---|---|
-| REFUSE_START | 停并转述 reason：未过设计门 → 提示先完成 `/g-review spec` 与拍板；change 不存在 → 核对拼写 |
+| REFUSE_START | 停并转述 reason：`next=g-spec`（缺合格 decision-memo.md）→ 请人先跑 `/g-spec` 完成相位 B，g-done 不代跑；未过设计门 → 提示先完成 `/g-review spec` 与拍板；reason 含「拍板失鲜」→ 见下方 🔴；change 不存在 → 核对拼写 |
 | RUN_PLAN | 按 **g-implement mode=plan** 执行 |
-| CONTINUE_IMPL | 按 **g-implement mode=exec** 执行，`done_tasks` 原样取 gate JSON |
-| RUN_CODE_REVIEW | 按 **g-review arg=code** 执行 |
-| BLOCKED_UPSTREAM | 停：代码审结论 blocked，原样上抛 P0/P1 清单 |
+| CONTINUE_IMPL | 按 **g-implement mode=exec** 执行，`done_tasks` 原样取 gate JSON；g-implement 报某票 BLOCKED（frontier 退出码 4）→ 停并上抛，重调后 gate 判 IMPL_BLOCKED |
+| IMPL_BLOCKED | 停：原样上抛 `blocked_tasks` 与原因。人处理后删除 tickets.md 中对应 `BLOCKED:` 行并提交，再重调；MUST NOT 自行删行或重派被阻塞的票 |
+| RUN_CODE_REVIEW | **本会话执行过本 change 的实现（跑过 g-implement）→ 默认停**：提示人「`/clear` 后 `/g-done {change}`」——作者带着实现上下文自审即无独立性，gate 从盘面续跑不丢状态；人明确说在本会话继续才不停。本会话没做过实现（如 `/clear` 后新会话起手即得此 verdict）→ 按 **g-review arg=code** 执行 |
+| BLOCKED_UPSTREAM | 停：代码审结论 blocked，原样上抛 P0/P1 清单。按报告修复并提交代码后重调 → gate 判 RERUN_STALE 重跑代码审；需人决策的 blocker 等人 |
 | RUN_VERIFY | 见下方「RUN_VERIFY 三种情形」 |
-| VERIFY_FAIL | 停：展示 verify-report 缺口清单，等人修复后重调 |
+| ARCHIVE_UNCOMMITTED | 已 `openspec archive`、归档未提交：取 JSON `archive_dir`，从「archive」第 3 步 delta 核验继续，通过后进入「commit」 |
+| VERIFY_FAIL | 停：展示 verify-report 缺口清单。缺口需改代码 → 人修复并提交后重调（代码变化自动 RERUN_STALE 重验）；缺口只在 openspec/ 内（证据行、收尾票报告、tasks 勾选等，代码无需改）→ 经人确认后补齐，按「verify」整节重跑：重新捕获 `{verified_ref}`、**整份重写** verify-report.md、重新写锚（`--set verify=PASS` 可覆盖旧 FAIL） |
 | RERUN_STALE / STEP_IN_PROGRESS | 按 `next` 字段重跑该步（映射见下） |
 | SHIPPED | 输出摘要，结束；`merge_not_requested=true` 时注明未请求合并并留在 work_branch；`merge_skipped=true` 时注明已归档、按 .skip-merge 跳过合并 |
-| UNKNOWN | 停并原样转述 reason（多为 tickets.md 结构不合契约或锚冲突） |
+| UNKNOWN | 停并原样转述 reason（多为 tickets.md 结构不合契约、锚冲突，或归档提交/待合并代码与 verify 锚定的已验证代码不一致） |
 
-**`next` 名映射**（gate 内部仍用旧步骤名）：`g-spec-review` → `/g-review spec`；`g-code-review` → `/g-review code`；
-`g-implement` → g-implement（tickets.md 缺 → mode=plan，否则 mode=exec）；`g-done` → 本文件 verify。
-🔴 `next=g-spec-review` 且 reason 为设计失鲜 = **批准后设计又被改了** → 停下交人：重审 + 重新拍板，MUST NOT 自行补锚。
+**`next` 名映射**（gate 内部仍用旧步骤名）：`g-spec` → 请人跑 `/g-spec`（需人参与拷问，不代跑）；`g-code-review` → `/g-review code`；
+`g-implement` → g-implement（tickets.md 缺 → mode=plan，否则 mode=exec）；`g-done` → 本文件 verify（ARCHIVE_UNCOMMITTED 时为 archive 第 3 步）。
+
+🔴 **设计在批准后又被改了**（REFUSE_START 且 reason 含「拍板失鲜」，或任一 verdict 的 JSON 带非空 `design_drift`）→ **先停下交人**，
+二选一：① 回 `/g-review spec` 重审并重新拍板（写锚后漂移消失）；② 人明确确认这些修订（在 spec-review-report.md 补记「批准后修订确认：<路径> + 人的原话」，
+按 g-review「收尾：设计审」第 3 步以新的送审提交重写设计门锚）。**MUST NOT 自行补锚、MUST NOT 无视 `design_drift` 继续跑。**
 
 「按 X 执行」= 读该 skill 的 SKILL.md，在主 session 内联跑完，回来重跑 gate。全程不打断，决策进对应报告的登记区。
 
@@ -200,14 +207,16 @@ description: >
 **Do Not Trust**：核对**代码是否真的实现了 tasks.md / specs 的每条要求**——不信任复选框、不信任任何已有报告措辞。每条判 ✅ MUST 附可机验证据锚（测试名 / commit / 文件:行），找不到锚判 gap。
 
 1. 起手确认源码已提交；用 `git rev-parse HEAD` 记录完整 `{verified_ref}`，必须在本轮需求核验与重跑测试**之前**捕获，不能在写锚时临时取 HEAD。发现源码脏改动先完成修复提交，再重新开始 verify。读 `tasks.md` 与 `specs/` 全部需求，Grep / 读码逐条核对。`tasks.md` 中已真实完成的项勾上，未做的保持未勾并注明（别为过归档假勾）。
-2. **实现期证据**：找收尾票报告（`R-ID: all` 那张票的 `impl-reports/task<N>-*.md`）：证据行齐全；判「通过」的行 SHA 必须与报告头原始 suite-scope JSON 的 `head` 为同一提交；任一通过行用例数为 0 → 核心缺口。找不到收尾票报告 → 核心缺口。
+2. **实现期证据**：找收尾票报告（`R-ID: all` 那张票的 `impl-reports/task<N>-*.md`）：证据行齐全；判「通过」的行 SHA 必须与报告头原始 suite-scope JSON 的 `head` 为同一提交；任一通过行用例数为 0 → 核心缺口；用例数为「未知」的通过行未附原始输出末尾（≥20 行）作证据 → 核心缺口。找不到收尾票报告 → 核心缺口。
 3. **修复后重跑**（覆盖收尾票之后的代码审修复）：A = 收尾票报告头原始 suite-scope JSON 的完整 `head`，不从通过行推导。无测试层或全部层确无覆盖时仍用该 head；JSON/head 缺失或无法解析为提交即核心缺口，先补做收尾验证，不猜 HEAD。
    `python3 <skills_root>/g-implement/scripts/impl_route.py suite-scope --root "$(git rev-parse --show-toplevel)" --change {change} --base <A> --head HEAD`
    - 退出非 0 → 环境故障 halt（problem / cause / fix），MUST NOT 判 PASS；
    - `unconfigured_layers` 非空 → 按 g-implement 收尾票的发现规则查 CI、README 与既有测试约定，执行发现的命令并记录来源；不得以空 `layers` 免测。确无该层须附查证依据；
    - `mapping` 为空且无待发现层 → 写「无代码改动，未触发重跑」；仅显式 domains 配置命中空层集合时，才写「命中域无自动测试层」；
    - 否则逐层跑（`unit` 取 `full`，其余取 `quick`），证据五列同格式写进 verify-report，所有通过行锚同一个 `{verified_ref}`；
-   - 失败分诊：与收尾票 `## 既有红测` 中 (层, 用例标识) 逐字匹配 → 放行；复跑即绿 → 注明 flaky 放行；环境问题 → halt；其余 → 核心缺口。
+   - 失败分诊：与收尾票 `## 既有红测` 中 (层, 用例标识) 逐字匹配的行，须为六列 `<层> | <失败用例标识> | <issue id> | <base_sha> | <base 复跑命令> | <base 退出码>`，
+     且 verify **亲自复核**：`git worktree add --detach <临时目录> <base_sha>` → 在其中跑该行命令 → 确认仍失败（退出码非 0 且同一用例红）→ `git worktree remove --force <临时目录>`；
+     列不全、base 上其实是绿的、或命令跑不起来 → 不放行，判核心缺口（实现者自贴标签不算数）。复跑即绿 → 注明 flaky 放行；环境问题 → halt；其余 → 核心缺口。
 4. 只报真实缺口：核心功能缺失 → FAIL；Minor（日志 / polish / 文档）→ PASS 并注明。
 5. 写 `{change_dir}/verify-report.md`：标题 + 结论行 + 逐需求核对表（需求 | 证据锚 | ✅/⚠️/❌）+ 缺口清单。
 6. 提交 → 写锚 → 再提交（锚覆盖 `{verified_ref}` 的代码内容；报告提交仅允许列出的路径，拒绝源码脏改动且保留其他暂存文件；openspec/ 外有未提交改动或测试产物会被拒写，先处理并重新核验）：
@@ -234,21 +243,31 @@ hand-off 三段：① 详细变更说明（按需求列出：完成的能力、�
 
 1. `openspec archive {change} -y --json`：exit 0 且顶层 `archive` 非 null → 成功（`warnings` 照录）；
    否则 fallback：`openspec archive {change} --skip-specs -y`，再**按代码实况**手动同步主 specs（ADDED 追加、MODIFIED 整条替换、REMOVED 删除、RENAMED 改名，匹配主 spec 既有风格），对动过的 spec 跑 `openspec validate <cap> --type spec`。
-2. 记 `{archive_dir}` = `openspec/changes/archive/<日期>-{change}/`。
-3. **delta 核验**：`python3 <skills_root>/g-done/scripts/delta_sync_check.py --archive-dir {archive_dir}`
+   手动同步的坑（首次执行踩过，逐条核）：
+   - **以代码为准改写**，不照搬旧 delta 原文：delta 写于实现前，实现期的修订要落进主 spec。
+   - **中文遗留主 spec**：既有主 spec 用中文标题/中文 Requirement 名时沿用其语言与写法，不混入英文模板标题，否则名字对不上、delta 核验必红。
+   - **blockquote 不得写在 SHALL/MUST 句之前**：Requirement 首段须是含 SHALL/MUST 的规范句，说明性 `>` 引用放在其后，否则 validate 判缺规范句。
+   - MODIFIED 是**整条替换**（含全部 Scenario），不是追加一段；REMOVED 连同其 Scenario 一起删。
+   - 嵌套 capability（如 `identity/user-auth`）按同一相对路径落到 `openspec/specs/` 下。
+2. 记 `{archive_dir}` = `openspec/changes/archive/<日期>-{change}/`（gate 判 ARCHIVE_UNCOMMITTED 时取 JSON `archive_dir`）。
+3. **delta 核验**（MUST 在 commit 之前跑：MODIFIED 正文要与归档前的 HEAD 比对）：`python3 <skills_root>/g-done/scripts/delta_sync_check.py --archive-dir {archive_dir}`
    退出 0 → 继续；1 → 按输出补同步主 specs 后重跑，**MUST NOT 进入 commit**；2 → 停并报告。
 
 ## commit
 
 1. `git add openspec/`
 2. `git -c core.quotePath=false diff --name-only -- . ':(exclude)openspec'` 非空（openspec/ 外有已追踪未暂存改动）→ halt 并列清单：属于本 change 的先 `git add` 后重跑，无关的先移走。MUST NOT 用 `git add -u` 一并带入。
-3. Conventional Commits 中文 message（`type(scope): 动词开头描述`），用多个 `-m`，勿用 `\` 续行 + heredoc。
+3. `git -c core.quotePath=false diff --cached --name-only -- . ':(exclude)openspec'` 非空（openspec/ 外有**已暂存**改动）→ halt 并列清单：这些代码没经过 verify，不得进归档提交；人确认后 `git restore --staged <路径>` 移出，属于本 change 的须回到 active 状态重新 verify。
+4. Conventional Commits 中文 message（`type(scope): 动词开头描述`），用多个 `-m`，勿用 `\` 续行 + heredoc；**只提交 openspec/**：`git commit -m "<标题>" -m "<正文>" -- openspec/`。
+   提交后重跑 gate：归档提交里的代码与 verify 锚定的已验证代码不一致 → UNKNOWN，停下交人。
 
 ## merge
 
 1. 重新读取已提交的分支约定。merge_target=null → 直接结束，留在 work_branch（新建功能分支也不合并）；否则 base=merge_target，并确认在 work_branch 上发起合并。判 `{archive_dir}/.skip-merge`（已归档后标记随目录搬走；未归档则判 `{change_dir}/.skip-merge`）：存在 → 跳过 merge，摘要注明。
 2. `git -c core.quotePath=false status --porcelain` 有任何 `??` 行 → halt 并列清单（先纳入版本控制或确认无关后重跑）。
-3. 使用约定中的 work_branch（禁止取当前分支名猜来源），`git checkout {base}` → `git merge --ff-only {work_branch}`。不能快进 → 停下报告「base 已分叉，需手动决策」；冲突 → `git merge --abort` 并列冲突文件。**不 push**。
+3. 使用约定中的 work_branch（禁止取当前分支名猜来源），`git checkout {base}` → `git merge --ff-only {work_branch}`。
+   不能快进 → **先 `git checkout {work_branch}` 回到工作分支**，再停下报告「base 已分叉，需手动决策」（停在 base 上会让重调时 gate 与分支约定都找不到本 change）；
+   冲突 → `git merge --abort`、`git checkout {work_branch}`，再列冲突文件。**不 push**。
 
 ## SHIPPED 摘要
 

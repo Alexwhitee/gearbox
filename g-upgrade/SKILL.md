@@ -1,6 +1,6 @@
 ---
 name: g-upgrade
-description: 升级 gear 工具链运行 checkout（~/.skills/g-skills）：git pull → bash setup.sh（skills 软链 + ~/.g canonical/hack 同步刷新，堵 pull→setup 窗口期）→ 显示版本与最新变更；规则与评审工具全局单份共享，setup 完成后消费仓即时拿到最新版，无需额外操作，仅当消费仓要刷新人读 WORKFLOW-GUIDE.md 才按需跑 g-init update。当用户说"升级 gear"、"更新 gear skills"、"gear upgrade"、"gear 有新版本吗"、"刷新 gear"，或使用 /g-upgrade 时触发。
+description: 升级 gear 工具链运行 checkout（安装时跑过 setup.sh 的那个 clone，位置由 ~/.g 的安装锚反查，不假设固定目录）：git pull → bash setup.sh（skills 软链或 Windows 受管复制 + ~/.g canonical/hack 同步刷新，堵 pull→setup 窗口期）→ 显示版本与最新变更；规则与评审工具全局单份共享，setup 完成后消费仓即时拿到最新版，无需额外操作，仅当消费仓要刷新人读 WORKFLOW-GUIDE.md 才按需跑 g-init update。当用户说"升级 gear"、"更新 gear skills"、"gear upgrade"、"gear 有新版本吗"、"刷新 gear"，或使用 /g-upgrade 时触发。
 ---
 
 # g-upgrade — 运行 checkout 一键升级
@@ -132,25 +132,42 @@ description: 升级 gear 工具链运行 checkout（~/.skills/g-skills）：git 
 
 <!-- g:principles:end -->
 
-对**运行 checkout** `~/.skills/g-skills/` 执行升级三连。pull 与 setup 必须连跑——
-SKILL.md 软链即时生效、`~/.g/hack/` 脚本拷贝生效，只 pull 不 setup 会造成两者版本错位（陈旧遮蔽的脚本变体）。
+对**运行 checkout**（`<checkout>`，见第 0 步）执行升级三连。pull 与 setup 必须连跑——
+Unix 上 SKILL.md 软链即时生效、`~/.g/hack/` 脚本拷贝生效，只 pull 不 setup 会造成两者版本错位（陈旧遮蔽的脚本变体）；
+Windows 复制模式下 skills 与 hack 都是拷贝，只 pull 不 setup 则**什么都不生效**。
 
 ## 步骤
 
-1. **pull**：`git -C ~/.skills/g-skills pull --ff-only`
+0. **定位 `<checkout>`**（运行 checkout 可以在任何位置，MUST NOT 假设固定目录）：setup.sh 在 `~/.g`
+   （或 `$G_HOME`）留了指向 `<checkout>/g-init/assets/workflow` 的安装锚——Unix 是 `workflow` 软链，
+   Windows 复制模式是 `workflow-path` 指针文件（首行即路径）。
+   ```bash
+   G="${G_HOME:-$HOME/.g}"
+   if [ -L "$G/workflow" ]; then a="$(readlink "$G/workflow")"
+   elif [ -f "$G/workflow-path" ]; then a="$(head -n1 "$G/workflow-path" | tr -d '\r')"
+   fi
+   CHECKOUT="${a%/g-init/assets/workflow}"; echo "$CHECKOUT"
+   ```
+   - 结果不以 `/g-init/assets/workflow` 结尾或目录不存在 → Unix 再看 skill 软链：
+     `readlink "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/g-upgrade"`（或 `~/.agents/skills/g-upgrade`），
+     去掉末段 `/g-upgrade` 即 checkout。Windows 的 skill 目录是拷贝（只有 `.g-skills` 版本标记，不含路径），
+     只能靠 `workflow-path`。
+   - 仍定位不到 → 停下问人运行 checkout 在哪（这是只有人知道的事），MUST NOT 凭空创建或猜测仓库 URL。
+1. **pull**：`git -C "$CHECKOUT" pull --ff-only`
    - 非 ff（本地被改过）→ 停下报告，不强推；提示"运行 checkout 只读，改动应发生在开发 checkout"。
-2. **setup**：`bash ~/.skills/g-skills/setup.sh`
-   - 刷 skills 软链 + `~/.g/workflow` canonical + `~/.g/hack/{checkpoint-commit.sh,resolve-workflow.sh}`。
-3. **展示**：`git -C ~/.skills/g-skills describe --tags --always --dirty` + `git -C ~/.skills/g-skills log --oneline -5`，向用户汇报版本与最新变更。
+2. **setup**：`bash "$CHECKOUT/setup.sh"`
+   - 刷 skills（Unix 软链 / Windows 受管复制）+ `~/.g` canonical（`workflow` 软链 / `workflow-path` 指针）+ `~/.g/hack/` 脚本。
+   - setup 末尾若提示「运行依赖未齐」，把缺项与安装命令原样转告用户。
+3. **展示**：`git -C "$CHECKOUT" describe --tags --always --dirty` + `git -C "$CHECKOUT" log --oneline -5`，向用户汇报版本与最新变更。
    （版本由 git 自报——本仓**无 `VERSION` 文件**，手工维护的版本号必然过期。）
 4. **提示**：规则与评审工具全局单份共享（`adr/0039`），本步 setup 完成后各消费仓即时生效，
    **无需**再跑任何命令；消费仓仅在要刷新人读 `WORKFLOW-GUIDE.md`、或想看仓内死件残留告警时，
    才按需在该仓跑 `g-init update`（本 skill 不代跑）。
 ## 回滚
 
-推坏一版规则时：`git -C ~/.skills/g-skills checkout <上一已知良好 commit> && bash ~/.skills/g-skills/setup.sh`。
+推坏一版规则时：`git -C "$CHECKOUT" checkout <上一已知良好 commit> && bash "$CHECKOUT/setup.sh"`。
 
 ## 注意
 
 - 只动运行 checkout；开发 checkout（编辑规则/skill 的 clone）不归本 skill 管。
-- 使用运行 checkout 已配置的远程；先核对 remote 指向用户选择的 G Skills 仓库，不自动改 remote，也不自动切换到其它仓库。标准路径不存在时定位实际安装来源，不能凭空创建或猜测仓库 URL。
+- 使用运行 checkout 已配置的远程；先核对 remote 指向用户选择的 G Skills 仓库，不自动改 remote，也不自动切换到其它仓库。

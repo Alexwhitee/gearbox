@@ -36,6 +36,25 @@ def test_bash_executable_prefers_git_bash_over_wsl_launcher():
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows-specific Bash selection")
+def test_bash_executable_derives_git_bash_from_git_install_tree(tmp_path, monkeypatch):
+    """Git for Windows 装在非默认目录、git.exe 落在 ucrt64\\bin 时，也从 git 安装树找到 usr\\bin\\bash.exe。"""
+    import test_support.windows as W
+
+    git_root = tmp_path / "dev-software" / "Git"
+    bash = git_root / "usr" / "bin" / "bash.exe"
+    bash.parent.mkdir(parents=True)
+    bash.write_bytes(b"")
+    git = git_root / "ucrt64" / "bin" / "git.exe"
+    git.parent.mkdir(parents=True)
+    git.write_bytes(b"")
+    for name in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(W.shutil, "which", lambda name, *a, **k: str(git) if name == "git" else None)
+
+    assert Path(W.bash_executable()) == bash
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific Bash selection")
 def test_git_bash_preserves_path_command_overrides(tmp_path):
     stub = tmp_path / "grep"
     stub.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")

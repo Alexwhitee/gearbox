@@ -30,10 +30,10 @@
  阶段三·收尾 ── 过设计门后连续跑到 merge，无人类门 ────────────
    /g-done {change}   ship_gate 状态机驱动（盘面即状态）：
      ├─ RUN_PLAN / CONTINUE_IMPL → g-implement（出票 / 逐票实现+双轴自审+checkpoint）
-     ├─ RUN_CODE_REVIEW          → /g-review code → code-review-report.md
+     ├─ RUN_CODE_REVIEW          → 默认停：/clear 后 /g-done（代码审在不带实现上下文的会话里做）→ /g-review code → code-review-report.md
      ├─ RUN_VERIFY               → verify（Do Not Trust + 证据锚 + frontmatter 写锚）
      ├─ ADR 同步（非阻塞）→ hand-off → archive → commit → 按约定合并或不合并并留在工作分支完成（.skip-merge 三态）
-     └─ SHIPPED → 摘要；VERIFY_FAIL / BLOCKED_UPSTREAM → 停并上抛
+     └─ SHIPPED → 摘要；VERIFY_FAIL / BLOCKED_UPSTREAM / IMPL_BLOCKED / 带 design_drift → 停并上抛
 ```
 
 ## 二、逐步 prompt
@@ -51,7 +51,7 @@
 ## 三、关键设计决策（内联版保留项）
 
 1. **FF-0 三分支判定**（生成起手开分支，带守卫）：保护分支 → `git checkout -b feat/{change}`；已在 `feat/{本 change}` → 跳过；其它 feature 分支 → halt 问人。见 ff-generation-constraints.md §FF-0。
-2. **`/clear` 只在两处阶段交界用**（一→二、二→三）：盘面纪律 + 产物自足性检验 + 去作者偏置；不要求切换模型；阶段内部要控上下文用 `/compact`。
+2. **`/clear` 只在两处阶段交界用**（一→二、二→三）：盘面纪律 + 产物自足性检验 + 去作者偏置；不要求切换模型；阶段内部要控上下文用 `/compact`。**唯一例外**：阶段三的 `RUN_CODE_REVIEW` 断点——实现与代码审同会话等于作者自审，本会话做过该 change 的实现时，g-done 在此默认停下请人 `/clear` 后重调 `/g-done {change}`，代码审在 fresh 会话里做（gate 从盘面续跑，零跨步记忆，不丢状态）；人明确要求本会话继续才不断。其余阶段内部仍禁 `/clear`。
 3. **中途不 AskUserQuestion（G2）**：决策进报告「决策登记区」（≥2 方案：选项+推荐+三面后果(系统/用户/开发循环)+主次判定），攒到门一次拍。
 4. **只停一次人类**：设计 HARD-GATE。阶段三内 ≥2 方案：有客观判据（测试/断言/基准）→ 自动选并记三镜+主次理由；无判据且影响大 → 登记区/hand-off 上抛；**MUST NOT 以自评置信硬选**。
 5. **每步 checkpoint**：`checkpoint-commit.sh` 固定 message，不 squash。普通模式 git add -A；代码审与 verify 报告必须用 `-- openspec/<文件>...` 限定路径，拒绝源码脏改动并保留无关暂存文件。
@@ -72,7 +72,7 @@
 
 - [ ] 问题清晰否？不清晰先 explore；人示意收敛才自动接 /g-spec
 - [ ] 生成起手过 FF-0？每步 checkpoint？
-- [ ] `/clear` 只在两处交界？内部用 `/compact`？
+- [ ] `/clear` 只在两处交界 + RUN_CODE_REVIEW 断点？其余内部用 `/compact`？
 - [ ] 设计审一份报告 + 决策登记区？读了真实代码、过了命中领域清单、对抗裁决？
 - [ ] 过了 HARD-GATE（用户批准）才进阶段三？
 - [ ] 实现逐票闭环（实现 → 双轴自审 → 验收命令 → checkpoint）？BLOCKED 如实标？

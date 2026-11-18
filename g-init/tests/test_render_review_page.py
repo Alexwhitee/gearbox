@@ -468,6 +468,22 @@ def test_missing_assets_exit_2(tmp_path, md_a):
     assert not out2.exists()
 
 
+def test_missing_assets_fix_names_the_checkout_from_the_install_anchor(tmp_path, md_a):
+    """修复提示点名实际运行 checkout：<G_HOME>/workflow-path 指针（Windows 形态）指向
+    <checkout>/g-init/assets/workflow ⇒ 提示里是该 checkout，而不是写死的约定目录。"""
+    gear = tmp_path / "gear"
+    (gear / "hack").mkdir(parents=True)
+    copy = gear / "hack" / "render-review-page.py"          # 无 review-page/ 资产 ⇒ 资产缺失
+    copy.write_bytes(SCRIPT.read_bytes())
+    checkout = tmp_path / "some" / "gear-clone"
+    (gear / "workflow-path").write_text(f"{checkout.as_posix()}/g-init/assets/workflow\n", encoding="utf-8")
+    r = run_cli("--out", tmp_path / "o.html", "--title", "t", "--doc", f"甲={md_a}", "--no-open",
+                cwd=tmp_path, script=copy)
+    assert r.returncode == 2
+    assert f"在运行 checkout（{checkout.as_posix()}）跑 bash setup.sh" in r.stderr
+    assert "~/.skills/g-skills" not in r.stderr
+
+
 # ── 安全：CSP · 内联脚本哈希 · 外部引用 · 嵌入转义 ───────────────────────────
 
 # 开发期对 mermaid@12.2.0 dist/mermaid.min.js 实际下载后独立算出的 sha384（见 impl-report），

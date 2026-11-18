@@ -67,6 +67,33 @@ def load_sibling(filename, name):
     return module
 
 
+def setup_fix():
+    """「重跑 setup.sh」提示点名实际的运行 checkout。优先复用渲染器的同名实现；
+    渲染器本身加载不上（正是要提示重装的场景）时，按同一判据就地反查：
+    <G_HOME>/workflow 软链（Unix）或 <G_HOME>/workflow-path 指针（Windows）指向
+    <checkout>/g-init/assets/workflow。"""
+    try:
+        return get_renderer().setup_fix()
+    except (OSError, ImportError, SyntaxError, AttributeError):
+        pass
+    workflow = HERE.parent / "workflow"
+    target = None
+    if workflow.is_symlink():
+        target = os.readlink(str(workflow))
+    elif workflow.is_dir():
+        target = str(workflow.resolve())
+    else:
+        try:
+            target = (HERE.parent / "workflow-path").read_text(encoding="utf-8").splitlines()[0].strip()
+        except (OSError, UnicodeDecodeError, IndexError):
+            pass
+    suffix = "/g-init/assets/workflow"
+    target = (target or "").replace("\\", "/").rstrip("/")
+    if target.endswith(suffix) and len(target) > len(suffix):
+        return "在运行 checkout（%s）跑 bash setup.sh" % target[:-len(suffix)]
+    return "在运行 checkout（当初跑 setup.sh 安装本工具的那个 clone）重跑 bash setup.sh"
+
+
 def usage():
     return fail("用法错误", "需要且只能给 --stdin 一个参数",
                 "python3 ~/.g/hack/record-review-disposition.py --stdin <<'G_DISPOSITION'",
@@ -176,7 +203,7 @@ def run(argv):
         renderer = get_renderer()
     except (OSError, ImportError, SyntaxError) as exc:
         return fail("缺少同目录脚本", "%s: %s" % (type(exc).__name__, exc),
-                    "在运行 checkout（~/.skills/g-skills）跑 bash setup.sh")
+                    setup_fix())
 
     # check() 不通过时自己已向 stderr 打了 ✗ problem= 行
     code, target = checker.check(rel_path)

@@ -1,8 +1,8 @@
 # ═════════════════════════════════════════════════════════════
 # 【config 起始模版】—— openspec/workflow/ bundle 的一部分。
 # 用法（新项目）：
-#   1. 规则经全局 canonical（~/.g/workflow）解析，仓内仅 tools/；下文 @openspec/workflow/... 引用在无本地
-#      副本的仓中 = 全局 bundle 内同名文件（resolve-workflow.sh 输出根）。
+#   1. 规则经全局 canonical（~/.g/workflow）解析，仓内 openspec/workflow/ 只放人读手册 WORKFLOW-GUIDE.md；
+#      下文 @openspec/workflow/... 引用 = 全局 bundle 内同名文件（resolve-workflow.sh 输出根）。
 #   2. 把本文件**另存为** openspec/config.yaml（OpenSpec 实际读取的是它，不是本模版）。
 #   3. 通用部分照搬：本注释、context 的「通用」段、全部 rules。
 #   4. 仅替换 context 的「本项目」段为该项目的 tech stack / 约定。
@@ -11,7 +11,7 @@
 # ─────────────────────────────────────────────────────────────
 # 升级安全的叠加层：本文件的 context/rules 是对 OpenSpec 自带 schema 的【加法】。
 # · openspec update 不会覆盖 openspec/config.yaml（init 检测到已存在即跳过）。
-# · 不改包内模版、不改 proposal→specs→design→tasks 流程；只在生成时追加必填槽。
+# · 不改 schema 模版与产物依赖图（g-spec-driven：proposal→design→specs→tasks）；只在生成时追加必填槽。
 # · rules 是给 AI 的生成软约束（非 validate 硬校验）。要硬卡须改 schema（则不再升级安全）。
 # ═════════════════════════════════════════════════════════════
 schema: g-spec-driven
@@ -99,7 +99,7 @@ rules:
 #         integration: "hack/run-tests.sh integration"
 #         e2e: "hack/run-tests.sh e2e"
 
-# operations（可选段）——按操作类型（如 archive）下沉给执行子代理的硬约束指引。
+# operations（可选段）——按操作类型（如 archive）下沉给执行该操作的 agent（本流程为 /g-done 主 session）的硬约束指引。
 # guidance 形状为字符串数组（非字符串），否则 CLI 拒绝并打警告。
 operations:
   archive:
