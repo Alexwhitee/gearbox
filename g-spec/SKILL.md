@@ -151,7 +151,8 @@ A 澄清──共识初成──▶ B 拷问（起手即建分支 + change 目�
 > **两条铁律**：
 > - **B 不可跳过**。任何进入 C 的路径 SHALL 先产出非空 `decision-memo.md`；A 可提前收束，**B 不可以**。
 > - **诚实边界**：本 skill 提供**结构性改善，不是机械保证**——跳过须主动偏离指令，而指令层
->   约束由执行方自报。机械可验的只有「纪要存在且必填小节非空」，它**不能证明发生过对抗拷问**。
+>   约束由执行方自报。机械可验的只有「纪要存在、必填小节非空、已定稿」：由 `/g-done` 的 gate
+>   （`ship_gate`）在送设计审前检查，不过即 REFUSE_START 退回 `/g-spec`；它**不能证明发生过对抗拷问**。
 >   **MUST NOT 在任何地方声称「跳过风险结构性消灭」。**
 
 **按需资料路由（默认不加载）**：
@@ -180,8 +181,9 @@ openspec list                      # 供 0.3 重入探测比对
 ```
 
 命令不存在或非零退出 ⇒ **fail-closed 中止**，按三要素报告：problem（CLI 预检失败）+
-cause（exit code / `command not found` 原文 + 实际版本）+ fix（`/openspec-upgrade`，或
-`npm i -g @fission-ai/openspec`）。**MUST NOT 手工创建 change 目录结构顶替。**
+cause（exit code / `command not found` 原文 + 实际版本）+ fix（装本仓 CLI 契约验证版本：
+`npm install -g @fission-ai/openspec@2.1.0`，需 Node ≥ 22.20.0）。**MUST NOT 手工创建 change 目录结构顶替。**
+C.3 载荷 schema 断言失败（CLI 换版、行为漂移）时同样给这条命令。
 
 ### 0.2 宿主标注（内联精简版）
 
@@ -197,14 +199,17 @@ cause（exit code / `command not found` 原文 + 实际版本）+ fix（`/opensp
 探测 ① 当前分支名（`feat/{change}` ⇒ 取 `{change}`）② `openspec/changes/` 在途目录。命中任一
 ⇒ 对该 change **无条件**读 `openspec status --change <name> --json` 的 `isComplete`，按
 [`references/execution-protocol-details.md`](references/execution-protocol-details.md) 的
-isComplete 三态判定表分治（未命中 → 正常进入相位 A）。「继续还是新开」**必须问人**：两种意图导致
+isComplete 判定表分治（未命中 → 正常进入相位 A）。「继续还是新开」**必须问人**：两种意图导致
 **实质不同的产物**；**MUST NOT 只探 `isComplete=false`**，也 **MUST NOT 拿「有没有 `decision-memo.md`」当探测前提**。
+`isComplete=true` 只证明文件齐全（空文件也算）：还须 `git log --format=%s -- openspec/changes/<name>/`
+含 `checkpoint(g-spec-generate)` **且** `git status --porcelain -- openspec/changes/<name>/` 为空，才是
+`complete`；否则判**待终审**——补跑终审 + checkpoint，MUST NOT 拒绝或跳过终审。
 
 ### 0.4 相位状态机
 
-`absent ──B起手①②③④──▶ B-draft ──收敛⑤⑥──▶ B-finalized ──生成──▶ C-partial ──全产物过 validate──▶ complete`
+`absent ──B起手①②③④──▶ B-draft ──收敛⑤⑥──▶ B-finalized ──生成──▶ C-partial ──全产物齐──▶ 待终审 ──终审+checkpoint──▶ complete`
 
-回边：删分支 ⇒ `absent`；纪要身份不符 ⇒ `B-draft`。`B-draft` 起于 B.1 ④（草稿纪要落盘即**可探测**）。**`complete` 态 SHALL 拒绝重生成**，判定见 0.3 第三行。
+回边：删分支 ⇒ `absent`；纪要身份不符 ⇒ `B-draft`。`B-draft` 起于 B.1 ④（草稿纪要落盘即**可探测**）。**`complete` 态 SHALL 拒绝重生成**，判定见 0.3 末段与三态表。
 
 ---
 
@@ -291,8 +296,8 @@ python3 <skills_root>/g-done/scripts/branch_context.py init --root "$(git rev-pa
 **④ 立即落最小草稿纪要**（B.4 首个保存点前移）
 
 目录一建成**当场**写出 `decision-memo.md`：身份 frontmatter（`schema_version` / `change` /
-`branch` / `generated_at`；`decision_hash` **留空**，B.8 ⑤ 才算）+ 空的 `## 承重约束` /
-`## 拍板决策`。🔴 少了这一步，③④ 之间崩溃会留下认不出的在途 change（见 0.3）；草稿过不了 C.1 判 4 ⇒ 走「缺失 ⇒ 退回 B 补定稿」。
+`branch`；`generated_at` 与 `decision_hash` **不写**，B.8 ⑤ 定稿才补）+ 空的 `## 承重约束` /
+`## 拍板决策`。🔴 少了这一步，③④ 之间崩溃会留下认不出的在途 change（见 0.3）；草稿缺定稿两字段 ⇒ C.1 走「缺失 ⇒ 退回 B 补定稿」。
 
 ### B.2 锚点纪要（对话内，不落盘）
 
@@ -341,6 +346,8 @@ python3 <skills_root>/g-done/scripts/branch_context.py init --root "$(git rev-pa
 1. **ADR 三条件**（同 B.6 判据）⇒ 该决策需要一条 ADR。
 2. **术语冲突判据**（同 B.6）：该决策引入/使用的术语与 `openspec/CONTEXT.md` 已有定义是否冲突或模糊 ⇒ 需更新 CONTEXT.md。
 3. scope 内聚检查：MUST 读 `references/scope-cohesion-check.md` 判据；发现偏离 MUST 呈现给人拍板，MUST NOT 静默调整范围。
+4. **零 spec 级行为变更？**（纯重构 / 工具 / 文档，外部可观察行为不变）⇒ 作为一条**拍板决策**写进纪要
+   （依据：哪些行为不变、怎么确认的），相位 C 按 C.3 的 `skip_specs` 例外处理。**MUST NOT 为过 validate 编造 Requirement。**
 
 🔴 同 B.6：item 1/2 未经人确认 MUST NOT 自动写入，判据与落盘流程同引 B.6 所示文件。
 
@@ -401,27 +408,39 @@ MUST NOT 按「身份不匹配」去问人复用与否。
    - 成对的 `<!-- g:delegation:start -->` / `<!-- g:delegation:end -->` 区块须在**应用载荷前**整段剥离，MUST NOT 解析 Markdown；均无是 no-op，缺失/乱序/不成对则 fail-closed 报 problem+cause+fix。
    - `resolvedOutputPath` 为 glob 时只是模式，按 instruction 推导具体 `specs/<capability>/spec.md`；既有产物取 `status --json` 的 `artifactPaths.<id>.existingOutputPaths`。
    - 生成前读 status；`status` 为 `skipped` 时跳过，MUST NOT 创建任何对应文件，并从依赖阅读清单移除该 artifact。
+   - B.7 ④ 已拍板「零 spec 级行为变更」⇒ 生成 specs **之前**向 `.openspec.yaml` **追加** `skip_specs: true`；
+     随后 `status` 中 specs 为 `skipped`，按上条跳过。纪要无该决策 ⇒ MUST NOT 写此键。
 4. **路径净化**（`resolvedOutputPath` 来自第三方 CLI，直接当写入目标 = confused deputy）：
    canonicalize 后 MUST 满足 —— ① 严格位于 `openspec/changes/<name>/` 内 ② 落在 artifact
-   allowlist（`proposal.md`/`design.md`/`tasks.md`/`specs/**/*.md`）③ 仓根到目标**逐组件都不是
+   allowlist（`proposal.md`/`design.md`/`tasks.md`/`specs/**/*.md`；唯一例外是上条对 `.openspec.yaml`
+   只追加 `skip_specs` 一个键，其余键 MUST NOT 改）③ 仓根到目标**逐组件都不是
    symlink**（含 change 目录及祖先，拒 symlink 逃逸）。任一不满足 ⇒ 拒写并 fail-closed 报告。
 5. **写入**：同目录 `.tmp-*` 临时文件 → rename **原子替换**。MUST NOT 就地半截覆盖。
 6. **写后核验（C.4）**。
 
-默认主 session 亲写；外派见 [`references/delegation-protocol.md`](references/delegation-protocol.md)（仅人明确要求时读）。
+生成一律由主 session 亲写（外派执行协议已退役）。
 
 ### C.4 写后核验：**存在态与合格态分开判**
 
+每写完一份产物只判**存在态**：
+
 ```bash
-openspec status  --change "<name>" --json      # 存在态：产出、skipped、existingOutputPaths、下一个 ready
+openspec status  --change "<name>" --json      # 产出、skipped、existingOutputPaths、下一个 ready
+```
+
+**合格态**只在两个时点判：① `specs` 产物写完后（此前 change 尚无 delta，validate 必红，不是产物缺陷）；
+② 终审复核。`skip_specs` 的 change 只在终审判：
+
+```bash
 openspec validate "<name>" --strict --type change   # 合格态：结构合法吗
 ```
 
-- `status` 只判文件存在 ⇒ 截断产物也报 `done`，叠加「不重写已完成产物」会锁死。
-- `validate --strict` 不过 ⇒ 判该产物**未完成**，进重试/亲写阶梯。**MUST NOT「文件存在即跳过」。**
+- `status` 只判文件存在 ⇒ 截断产物也报 `done`，叠加「不重写已完成产物」会锁死 ⇒ 存在态 MUST NOT 当完成判据。
+- 时点 ①② 的 `validate --strict` 不过 ⇒ 判 specs **未完成**，进重试/亲写阶梯。**MUST NOT「文件存在即跳过」。**
+- proposal / design / tasks 无机械合格门，未截断由终审读回判。
 - **MUST NOT 手搓 Markdown 解析器**。
 
-🔴 **诚实边界**：CLI 1.5.0 的 `validate --strict` 覆盖有已知限制，见
+🔴 **诚实边界**：`validate --strict` 的覆盖面与跑的时点见
 [`references/execution-protocol-details.md`](references/execution-protocol-details.md)。
 
 ---
@@ -431,7 +450,7 @@ openspec validate "<name>" --strict --type change   # 合格态：结构合法�
 四件套生成完毕 ⇒ 以**整个 change 目录**为追溯边界，读回四份 + 纪要，核三样：
 
 1. **纪要 ↔ 产物一致性** —— 决策遗漏、约束翻转、范围漂移。
-2. **design ↔ specs 互相一致** —— 二者在 CLI 依赖图中互不依赖，矛盾无其它环节兜。
+2. **design ↔ specs 互相一致** —— design 先写且不读 specs（内置 schema 下二者互不依赖），矛盾无其它环节兜。
    发现冲突 ⇒ 修正并注明；**MUST NOT 因「各自与纪要一致」而放过**。
 3. **config/TG 物证 + 未截断** —— 按载荷 `context/rules` 核条件槽；非平凡 design 至少一张
    组件/依赖图，TG-18 tasks 含测试覆盖图；未截断由人判。

@@ -404,7 +404,8 @@ def test_lint_accepts_git_toplevel_root(tmp_path, capsys):
 
 
 def test_fresh_page_reports_nothing(tmp_path, capsys):
-    (tmp_path / "environments.md").write_text("hello\n", encoding="utf-8")
+    # write_bytes：HELLO_SHA 是 b"hello\n" 的哈希；write_text 在 Windows 上会写成 CRLF，哈希对不上
+    (tmp_path / "environments.md").write_bytes(b"hello\n")
     _page_log(tmp_path, {"environments": {"path": "environments.md", "sha256": HELLO_SHA}})
     assert "评审页" not in _lint_text(tmp_path, capsys)
 

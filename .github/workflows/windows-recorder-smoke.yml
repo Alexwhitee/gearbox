@@ -66,12 +66,29 @@ jobs:
         # 不是 setup-python 选的版本，3.12 矩阵项会实际跑在 3.14 上。
         # pytest-xdist：Windows 起子进程慢，串行全量约 10 分钟；runner 4 核，-n auto 并行
         run: python -m pip install "pytest>=8" pytest-xdist
+      # openspec CLI：CLI 契约用例（test_openspec_cli_contract.py 等）未装即 skip。Windows 上 CLI 以
+      # openspec.cmd 形态落地，init.py 的探测与 shutil.which 都走这条分支——只在一档 python 上装
+      # （CLI 行为与 python 版本无关）。版本与 mechanical-gates.yml 一致，由契约测试机械比对。
+      - name: Setup Node (openspec CLI 的运行时)
+        if: matrix.python-version == '3.12'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install openspec CLI
+        if: matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          npm install -g @fission-ai/openspec@2.1.0
+          openspec --version
       - name: Run full pytest suite
         shell: bash
-        run: python -m pytest -q -n auto
+        # `-rs`：skip 理由逐条可见（Windows 上大量用例按平台 skip，不打印就分不清是平台差异还是漏装依赖）
+        run: python -m pytest -q -rs -n auto
 
   windows-recorder-and-encoding-smoke:
     runs-on: windows-latest
+    # 本 job 一律用 `python`：Windows 上 setup-python 只提供 python.exe，`python3` 会落到
+    # WindowsApps 的商店占位程序（"Python was not found"，exit 9009/49）。
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -104,15 +121,15 @@ jobs:
           output="$(PYTHONIOENCODING=gbk bash setup.sh 2>&1)"
           printf '%s\n' "$output"
           ! grep -Eq 'UnicodeEncodeError|Traceback' <<<"$output"
-          python3 hack/check_encoding_hygiene.py
+          python hack/check_encoding_hygiene.py
       - name: Run init update with a forced GBK child process
         shell: bash
         run: |
           probe="$RUNNER_TEMP/init-encoding-probe"
           mkdir -p "$probe"
           git -C "$probe" init
-          python3 g-init/scripts/init.py init --root "$probe"
-          PYTHONIOENCODING=gbk python3 g-init/scripts/init.py update --root "$probe"
+          python g-init/scripts/init.py init --root "$probe"
+          PYTHONIOENCODING=gbk python g-init/scripts/init.py update --root "$probe"
       - name: Exercise UTF-8 text subprocess call sites (issues_v2.py, retro_report.py, ship_gate.py) and invalid-byte replacement
         shell: bash
         run: |
@@ -122,21 +139,21 @@ jobs:
           git -C "$probe" config user.email test@example.com
           git -C "$probe" config user.name test
           git -C "$probe" commit -q --allow-empty -m init
-          add_out="$(PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" add --pool bug --json '{"module":"m","summary":"s","priority":"P1"}')"
-          issue_id="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$add_out")"
-          PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" set-status --id "$issue_id" --to FIXED --evidence "smoke"
-          PYTHONIOENCODING=gbk python3 g-issues/scripts/issues_v2.py --root "$probe" reindex
-          PYTHONIOENCODING=gbk python3 g-retro/scripts/retro_report.py --root .
+          add_out="$(PYTHONIOENCODING=gbk python g-issues/scripts/issues_v2.py --root "$probe" add --pool bug --json '{"module":"m","summary":"s","priority":"P1"}')"
+          issue_id="$(python -c "import json,sys; print(json.loads(sys.argv[1])['id'])" "$add_out")"
+          PYTHONIOENCODING=gbk python g-issues/scripts/issues_v2.py --root "$probe" set-status --id "$issue_id" --to FIXED --evidence "smoke"
+          PYTHONIOENCODING=gbk python g-issues/scripts/issues_v2.py --root "$probe" reindex
+          PYTHONIOENCODING=gbk python g-retro/scripts/retro_report.py --root .
           set +e
-          PYTHONIOENCODING=gbk python3 g-done/scripts/ship_gate.py --root . --change fix-windows-encoding-crash
+          PYTHONIOENCODING=gbk python g-done/scripts/ship_gate.py --root . --change fix-windows-encoding-crash
           gate_status=$?
           set -e
           test "$gate_status" -eq 0 -o "$gate_status" -eq 3 -o "$gate_status" -eq 4 -o "$gate_status" -eq 5 -o "$gate_status" -eq 6
-          python3 -c 'import subprocess, sys; r = subprocess.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([0x80]))"], capture_output=True, text=True, encoding="utf-8", errors="replace"); assert r.stdout == "\ufffd"'
+          python -c 'import subprocess, sys; r = subprocess.run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes([0x80]))"], capture_output=True, text=True, encoding="utf-8", errors="replace"); assert r.stdout == "\ufffd"'
       - name: Exercise cp936 console and redirected setup output without PYTHONIOENCODING
         shell: bash
         run: |
           chcp.com 936
-          env -u PYTHONIOENCODING python3 hack/check_encoding_hygiene.py
+          env -u PYTHONIOENCODING python hack/check_encoding_hygiene.py
           env -u PYTHONIOENCODING bash setup.sh > "$RUNNER_TEMP/setup-cp936.log" 2>&1
           ! grep -Eq 'UnicodeEncodeError|Traceback' "$RUNNER_TEMP/setup-cp936.log"

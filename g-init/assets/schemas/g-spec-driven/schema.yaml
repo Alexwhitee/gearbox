@@ -1,6 +1,6 @@
 name: g-spec-driven
 version: 1
-description: Default OpenSpec workflow - proposal → specs → design → tasks
+description: g-spec workflow - proposal → design → specs → tasks (generated via /g-spec, implemented and archived via /g-done)
 artifacts:
   - id: proposal
     generates: proposal.md
@@ -283,5 +283,9 @@ apply:
   requires: [tasks]
   tracks: tasks.md
   instruction: |
-    Read context files, work through pending tasks, mark complete as you go.
-    Pause if you hit blockers or need clarification.
+    <!-- g:delegation:start -->
+    STOP. In this workflow, implementation, code review, verification, archive and merge run only through the human-triggered `/g-done <change>` entry point (tickets.md, ship gate). Do not work through tasks.md, mark tasks complete, or run `openspec archive` from here. Ask the human to invoke `/g-done <change>`, then stop.
+    <!-- g:delegation:end -->
+
+    Implementation is driven by `/g-done` (tickets.md + ship gate); this
+    instruction intentionally carries no task-execution steps.

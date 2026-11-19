@@ -224,6 +224,45 @@ class TestProjectLocalSchema:
             "schema: spec-driven"
         )
 
+    def test_missing_cli_completes_but_warns_main_flow_unavailable(self, tmp_path, monkeypatch, capsys):
+        """CLI 不可用时 init 仍按降级路径铺设，但 MUST 明说主流程暂不可用——不能只打 ✓ 完成（假绿）。"""
+        root = tmp_path / "fresh"
+        root.mkdir()
+        monkeypatch.setattr(init_mod, "_openspec_cli_version", lambda: (None, "命令不可用"))
+        monkeypatch.setattr(init_mod, "_check_yq", lambda: (True, None))
+        monkeypatch.setattr(init_mod, "ensure_global_hooks", lambda: "stub")
+        monkeypatch.setattr(init_mod, "retire_hooks", lambda: "stub")
+        init_mod.run(str(root), "init")
+        out = capsys.readouterr().out
+        assert "依赖未齐" in out and "OpenSpec CLI" in out and "/g-spec" in out
+        assert "yq" not in out.split("依赖未齐", 1)[1]
+
+    def test_schema_gate_open_but_yq_missing_dies_before_touching_fs(self, tmp_path, monkeypatch, capsys):
+        """版本门通过而 yq 不可用：MUST 在动文件系统前 fail-closed，并报 yq 这个真因
+        （而非被 schema 校验折成「权威资产不可读取」），不留 openspec/ 半成品。"""
+        root = tmp_path / "fresh"
+        root.mkdir()
+        monkeypatch.setattr(init_mod, "_openspec_cli_version", lambda: ((1, 16, 0), None))
+        monkeypatch.setattr(init_mod.shutil, "which",
+                            lambda name, *a, **k: None if name == "yq" else shutil.which(name, *a, **k))
+        with pytest.raises(SystemExit) as exc:
+            init_mod.run(str(root), "init")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "yq 未安装" in err and "权威资产" not in err
+        assert not (root / "openspec").exists()
+
+    def test_update_with_yq_missing_leaves_project_untouched(self, tmp_path, monkeypatch):
+        root = self._project(tmp_path)
+        before = sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+        config = (root / "openspec" / "config.yaml").read_bytes()
+        monkeypatch.setattr(init_mod, "_openspec_cli_version", lambda: ((1, 16, 0), None))
+        monkeypatch.setattr(init_mod, "_check_yq", lambda: (False, "yq 未安装。"))
+        with pytest.raises(SystemExit):
+            init_mod.run(str(root), "update")
+        assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*")) == before
+        assert (root / "openspec" / "config.yaml").read_bytes() == config
+
     def test_migration_failure_stops_before_schema_and_config_switch(self, tmp_path, monkeypatch):
         root = self._project(tmp_path)
         original_config = (root / "openspec" / "config.yaml").read_bytes()
@@ -306,14 +345,69 @@ class TestProjectLocalSchema:
         assert count == 0
         assert marker.read_text(encoding="utf-8").startswith(f"schema: {init_mod.PROJECT_SCHEMA}")
 
-    @pytest.mark.parametrize("content", ["schema: ", "schema: unexpected\n", "not-schema: value\n"])
-    def test_migration_rejects_invalid_or_mismatched_existing_marker(self, tmp_path, content):
+    @pytest.mark.parametrize("content", ["schema: ", "not-schema: value\n"])
+    def test_migration_rejects_unparseable_existing_marker(self, tmp_path, content):
         root = self._project(tmp_path)
         marker = root / "openspec" / "changes" / "active" / ".openspec.yaml"
         marker.write_text(content, encoding="utf-8")
 
         with pytest.raises(RuntimeError, match="marker"):
             init_mod.migrate_changes(str(root), "spec-driven")
+
+    def test_migration_leaves_change_on_consumer_owned_schema_alone(self, tmp_path):
+        """消费仓可在 openspec/schemas/ 下维护自己的 project-local schema；钉在它上面的在途 change
+        不是坏 marker——update 不得因此整体失败，也不得改写它。"""
+        root = self._project(tmp_path)
+        marker = root / "openspec" / "changes" / "active" / ".openspec.yaml"
+        marker.write_text("schema: my-schema\n", encoding="utf-8")
+
+        assert init_mod.migrate_changes(str(root), "spec-driven") == 0
+        assert marker.read_text(encoding="utf-8") == "schema: my-schema\n"
+
+    def test_update_with_custom_schema_change_completes(self, tmp_path, monkeypatch):
+        root = self._project(tmp_path)
+        marker = root / "openspec" / "changes" / "active" / ".openspec.yaml"
+        marker.write_text("schema: my-schema\n", encoding="utf-8")
+        self._version(monkeypatch)
+        init_mod.run(str(root), "update")
+        assert marker.read_text(encoding="utf-8") == "schema: my-schema\n"
+        assert (root / "openspec" / "schemas" / "g-spec-driven" / "schema.yaml").is_file()
+
+    def test_non_filesystem_error_is_not_labelled_as_filesystem_failure(self, tmp_path, monkeypatch, capsys):
+        root = self._project(tmp_path)
+        marker = root / "openspec" / "changes" / "active" / ".openspec.yaml"
+        marker.write_text("not-schema: value\n", encoding="utf-8")
+        self._version(monkeypatch)
+        with pytest.raises(SystemExit):
+            init_mod.run(str(root), "update")
+        err = capsys.readouterr().err
+        assert "g-init update 中止" in err and "marker" in err
+        assert "文件系统操作失败" not in err
+
+    def test_update_without_cli_keeps_project_schema_key(self, tmp_path, monkeypatch, capsys):
+        """B7：CLI 不可用（版本未知）≠ CLI 过旧。前者 MUST NOT 把 config 从 g-spec-driven 降回内置。"""
+        root = self._project(tmp_path)
+        config = root / "openspec" / "config.yaml"
+        config.write_text("schema: g-spec-driven\ncontext: keep\n", encoding="utf-8")
+
+        def missing_cli(*args, **kwargs):
+            raise OSError("openspec: command not found")
+
+        monkeypatch.setattr(init_mod, "_check_yq", lambda: (True, None))
+        monkeypatch.setattr(init_mod.subprocess, "run", missing_cli)
+        init_mod.run(str(root), "update")
+        assert config.read_text(encoding="utf-8") == "schema: g-spec-driven\ncontext: keep\n"
+        out = capsys.readouterr().out
+        assert "未改 schema 键" in out and "g-spec-driven" in out
+
+    def test_update_with_old_cli_still_downgrades_project_schema_key(self, tmp_path, monkeypatch):
+        """版本可解析且 < 1.7.0：旧 CLI 读不了 fork，降到内置 schema 仍是正确行为。"""
+        root = self._project(tmp_path)
+        config = root / "openspec" / "config.yaml"
+        config.write_text("schema: g-spec-driven\ncontext: keep\n", encoding="utf-8")
+        self._version(monkeypatch, "1.6.9\n")
+        init_mod.run(str(root), "update")
+        assert config.read_text(encoding="utf-8") == "schema: spec-driven\ncontext: keep\n"
 
     def test_update_changes_only_schema_line(self, tmp_path, monkeypatch):
         root = self._project(tmp_path)
@@ -684,13 +778,14 @@ class TestEnsureGlobalHooks:
         assert len(data["hooks"]["PreToolUse"]) == 1  # not duplicated
 
 
-class TestSubagentPermissionGuardInstall:
-    """add-subagent-permission-guard Task 3：新 hook 经 `init` 入口装进全局 hook 目录并注册，
-    两个全局 hook 的注册命令在 CLAUDE_CONFIG_DIR 下都指向脚本实际落盘路径，退役走 RETIRED_HOOKS。
-    期望值取自 spec 字面（hook 名集合、事件、matcher），不从 HOOKS 推导。"""
+class TestGlobalHookInstall:
+    """全局 hook 经 `init` 入口装进 CLAUDE_CONFIG_DIR/hooks 并注册：注册命令的解释器在注册时
+    探测（真能跑才用），脚本路径展开到实际落盘位置；子代理权限守卫已退役，存量安装被摘除。
+    期望值取自字面（hook 名、事件、matcher），不从 HOOKS 推导。"""
 
     GUARD = "subagent-permission-guard.py"
     FF0 = "ff0-branch-guard.py"
+    SCRIPT = '"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/ff0-branch-guard.py"'
 
     @pytest.fixture(autouse=True)
     def _real_claude_untouched(self):
@@ -709,13 +804,17 @@ class TestSubagentPermissionGuardInstall:
         yield
         assert snap() == before, "真实 ~/.claude 被测试改动了"
 
-    def _init_twice(self, tmp_path, monkeypatch, seed_settings=None, second_mode="init"):
+    def _init_twice(self, tmp_path, monkeypatch, seed_settings=None, second_mode="init", seed_scripts=()):
         """seed_settings：init 前写入 settings.json 的内容（dict），None 则不写。"""
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
         if seed_settings is not None:
             (home / "settings.json").write_text(json.dumps(seed_settings), encoding="utf-8")
+        if seed_scripts:
+            (home / "hooks").mkdir()
+            for name in seed_scripts:
+                (home / "hooks" / name).write_text("# old install\n", encoding="utf-8")
         root = tmp_path / "proj"
         root.mkdir()
         init_mod.run(str(root), "init")
@@ -725,86 +824,131 @@ class TestSubagentPermissionGuardInstall:
     def _settings(self, home):
         return json.loads((home / "settings.json").read_text(encoding="utf-8"))
 
-    def test_hook_name_set_is_exactly_the_two_global_guards(self):
-        assert {h["name"] for h in init_mod.HOOKS} == {self.FF0, self.GUARD}
-        guard = next(h for h in init_mod.HOOKS if h["name"] == self.GUARD)
-        assert guard["event"] == "PermissionRequest"
-        assert guard["matcher"] == "*"
-        assert os.path.isfile(guard["src"])
+    def _expected_cmd(self):
+        return f"{init_mod._hook_interpreter()} {self.SCRIPT}"
 
-    def test_init_twice_installs_script_and_one_permission_request_registration(
-            self, tmp_path, monkeypatch, capsys):
+    def test_hook_set_is_exactly_the_branch_guard(self):
+        assert {h["name"] for h in init_mod.HOOKS} == {self.FF0}
+        ff0 = init_mod.HOOKS[0]
+        assert ff0["event"] == "PreToolUse"
+        assert ff0["matcher"] == "Bash"
+        assert ff0["script"] == self.SCRIPT
+        assert os.path.isfile(ff0["src"])
+
+    def test_subagent_guard_is_retired_and_no_longer_shipped(self):
+        assert self.GUARD in init_mod.RETIRED_HOOKS
+        assert not os.path.exists(os.path.join(init_mod.ASSETS, "hooks", self.GUARD))
+
+    def test_init_twice_installs_script_and_one_registration(self, tmp_path, monkeypatch, capsys):
         home, _ = self._init_twice(tmp_path, monkeypatch)
         capsys.readouterr()
-        assert (home / "hooks" / self.GUARD).is_file()
         assert (home / "hooks" / self.FF0).is_file()
-        data = self._settings(home)
-        perm = data["hooks"]["PermissionRequest"]
-        assert len(perm) == 1
-        assert perm[0]["matcher"] == "*"
-        assert self.GUARD in perm[0]["hooks"][0]["command"]
-        assert len(data["hooks"]["PreToolUse"]) == 1
-
-    def test_registered_commands_expand_to_the_script_landing_path(
-            self, tmp_path, monkeypatch, capsys):
-        home, _ = self._init_twice(tmp_path, monkeypatch)
-        capsys.readouterr()
-        data = self._settings(home)
-        commands = {
-            self.FF0: data["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
-            self.GUARD: data["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
-        }
-        env = dict(os.environ)
-        env["CLAUDE_CONFIG_DIR"] = str(home)
-        env["HOME"] = str(tmp_path / "some-other-home")  # 与 CLAUDE_CONFIG_DIR 不同，防巧合相等
-        for name, cmd in commands.items():
-            # 只展开路径、不执行脚本：把解释器 python3 换成 printf
-            assert cmd.startswith("python3 ")
-            probe = "printf %s " + cmd[len("python3 "):]
-            out = subprocess.run(["sh", "-c", probe], env=env, capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace",
-                                 check=True).stdout
-            assert out == str(home / "hooks" / name)
-            assert os.path.isfile(out)
-
-    def test_user_permission_request_entry_survives_install_and_retire(
-            self, tmp_path, monkeypatch, capsys):
-        user_entry = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/opt/my-perm-hook.sh"}]}
-        home, _ = self._init_twice(
-            tmp_path, monkeypatch,
-            seed_settings={"hooks": {"PermissionRequest": [user_entry]}})
-        capsys.readouterr()
-        perm = self._settings(home)["hooks"]["PermissionRequest"]
-        assert user_entry in perm
-        assert len([e for e in perm if self.GUARD in json.dumps(e)]) == 1
-        assert len(perm) == 2
-
-        monkeypatch.setattr(init_mod, "RETIRED_HOOKS", [self.GUARD])
-        init_mod.retire_hooks()
-        assert self._settings(home)["hooks"]["PermissionRequest"] == [user_entry]
-
-    def test_retiring_the_guard_removes_registration_and_script(
-            self, tmp_path, monkeypatch, capsys):
-        home, _ = self._init_twice(tmp_path, monkeypatch)
-        capsys.readouterr()
-        monkeypatch.setattr(init_mod, "RETIRED_HOOKS", [self.GUARD])
-        init_mod.retire_hooks()
-        data = self._settings(home)
-        assert data["hooks"]["PermissionRequest"] == []
         assert not (home / "hooks" / self.GUARD).exists()
-        # 无关的 FF-0 保留
-        assert (home / "hooks" / self.FF0).is_file()
+        data = self._settings(home)
         assert len(data["hooks"]["PreToolUse"]) == 1
+        assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == self._expected_cmd()
+        assert not data["hooks"].get("PermissionRequest")
 
-    def test_existing_legacy_ff0_registration_is_kept_unchanged_on_rerun(
-            self, tmp_path, monkeypatch, capsys):
+    def test_registered_command_runs_the_installed_guard(self, tmp_path, monkeypatch, capsys):
+        """真执行注册命令（解释器 + 落盘脚本），不拿 printf 替身：受保护分支上建 change 必须被拒。
+        商店占位 python3 之类「存在但跑不起来」的解释器在这里会直接红。"""
+        from test_support.windows import bash_executable
+        home, _ = self._init_twice(tmp_path, monkeypatch)
+        capsys.readouterr()
+        cmd = self._settings(home)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@e.invalid",
+                        "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+        payload = json.dumps({"tool_name": "Bash", "cwd": str(repo),
+                              "tool_input": {"command": "openspec new change demo"}})
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=str(home), HOME=str(tmp_path / "some-other-home"))
+        r = subprocess.run([bash_executable(), "-c", cmd], input=payload, env=env, cwd=str(repo),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        assert r.returncode == 0, r.stderr
+        assert '"permissionDecision": "deny"' in r.stdout, r.stdout + r.stderr
+
+    def test_registered_script_path_expands_to_the_landing_path(self, tmp_path, monkeypatch, capsys):
+        from test_support.windows import bash_executable
+        home, _ = self._init_twice(tmp_path, monkeypatch)
+        capsys.readouterr()
+        cmd = self._settings(home)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        assert cmd.endswith(" " + self.SCRIPT)
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=str(home), HOME=str(tmp_path / "some-other-home"))
+        out = subprocess.run([bash_executable(), "-c", "printf %s " + self.SCRIPT], env=env,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             check=True).stdout
+        # Windows 上 CLAUDE_CONFIG_DIR 是反斜杠路径、拼接段是正斜杠：按规范化路径比较。
+        assert os.path.normcase(os.path.normpath(out)) == os.path.normcase(str(home / "hooks" / self.FF0))
+        assert os.path.isfile(out)
+
+    def test_stale_own_registration_is_rewritten_once(self, tmp_path, monkeypatch, capsys):
+        """存量注册写死 python3 + $HOME/.claude：命令改写为当前探测结果，不新增第二条。"""
         legacy_cmd = 'python3 "$HOME/.claude/hooks/ff0-branch-guard.py"'
         legacy_entry = {"matcher": "Bash", "hooks": [{"type": "command", "command": legacy_cmd}]}
         home, _ = self._init_twice(
             tmp_path, monkeypatch,
             seed_settings={"hooks": {"PreToolUse": [legacy_entry]}}, second_mode="update")
         capsys.readouterr()
-        assert self._settings(home)["hooks"]["PreToolUse"] == [legacy_entry]
+        pre = self._settings(home)["hooks"]["PreToolUse"]
+        assert len(pre) == 1
+        assert pre[0]["matcher"] == "Bash"
+        assert pre[0]["hooks"] == [{"type": "command", "command": self._expected_cmd()}]
+
+    def test_foreign_command_mentioning_the_name_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        foreign = {"matcher": "Bash", "hooks": [
+            {"type": "command", "command": "/opt/wrap.sh --audit ff0-branch-guard.py"}]}
+        home, _ = self._init_twice(
+            tmp_path, monkeypatch, seed_settings={"hooks": {"PreToolUse": [foreign]}})
+        capsys.readouterr()
+        assert foreign in self._settings(home)["hooks"]["PreToolUse"]
+
+    def test_legacy_guard_install_is_retired_keeping_user_entries(self, tmp_path, monkeypatch, capsys):
+        user_entry = {"matcher": "Bash", "hooks": [{"type": "command", "command": "/opt/my-perm-hook.sh"}]}
+        guard_entry = {"matcher": "*", "hooks": [{"type": "command",
+                       "command": f'python3 "${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}/hooks/{self.GUARD}"'}]}
+        home, _ = self._init_twice(
+            tmp_path, monkeypatch,
+            seed_settings={"hooks": {"PermissionRequest": [user_entry, guard_entry]}},
+            seed_scripts=(self.GUARD,))
+        capsys.readouterr()
+        assert self._settings(home)["hooks"]["PermissionRequest"] == [user_entry]
+        assert not (home / "hooks" / self.GUARD).exists()
+        assert (home / "hooks" / self.FF0).is_file()
+
+
+class TestHookInterpreterProbe:
+    """`_hook_interpreter()`：按「真能跑」挑解释器，不按 PATH 上存在与否。"""
+
+    def _fake(self, monkeypatch, which, rc):
+        monkeypatch.setattr(init_mod.shutil, "which", lambda name, *a, **k: which.get(name))
+
+        class Proc:
+            def __init__(self, code):
+                self.returncode = code
+
+        def fake_run(cmd, *a, **k):
+            return Proc(rc[cmd[0]])
+
+        monkeypatch.setattr(init_mod.subprocess, "run", fake_run)
+
+    def test_working_python3_is_preferred(self, monkeypatch):
+        self._fake(monkeypatch, {"python3": "/bin/python3", "python": "/bin/python"},
+                   {"/bin/python3": 0, "/bin/python": 0})
+        assert init_mod._hook_interpreter() == "python3"
+
+    def test_store_stub_python3_falls_back_to_python(self, monkeypatch):
+        self._fake(monkeypatch, {"python3": "C:/WindowsApps/python3.exe", "python": "C:/Py/python.exe"},
+                   {"C:/WindowsApps/python3.exe": 9009, "C:/Py/python.exe": 0})
+        assert init_mod._hook_interpreter() == "python"
+
+    def test_nothing_runnable_falls_back_to_current_interpreter(self, monkeypatch):
+        self._fake(monkeypatch, {"python3": "C:/WindowsApps/python3.exe"},
+                   {"C:/WindowsApps/python3.exe": 49})
+        got = init_mod._hook_interpreter()
+        assert got == '"' + sys.executable.replace("\\", "/") + '"'
+        assert "\\" not in got
 
 
 class TestDevTombstone:
@@ -867,6 +1011,50 @@ class TestRunFsErrorGuard:
             assert "文件系统操作失败" in err
         finally:
             root.chmod(0o700)
+
+
+class TestInjectPreservesLineEndings:
+    """C7：托管区块外的用户行逐字节不变；区块按文件既有换行风格写入（Windows 文本模式曾把
+    整份 LF 文件改写成 CRLF，git diff 成整文件改动）。"""
+
+    def _seed(self, tmp_path, eol, with_block=True):
+        p = tmp_path / "CLAUDE.md"
+        head = f"# Mine{eol}{eol}keep this line{eol}{eol}"
+        block = (f"{init_mod.MARK_DOC[0]}{eol}old content{eol}{init_mod.MARK_DOC[1]}{eol}"
+                 if with_block else "")
+        tail = f"tail line{eol}" if with_block else ""
+        p.write_bytes((head + block + tail).encode("utf-8"))
+        return p, head, tail
+
+    @pytest.mark.parametrize("eol", ["\n", "\r\n"])
+    def test_replace_keeps_user_bytes_and_line_ending_style(self, tmp_path, eol):
+        p, head, tail = self._seed(tmp_path, eol)
+        init_mod.inject(str(p), *init_mod.MARK_DOC, "new line 1\nnew line 2\n")
+        data = p.read_bytes().decode("utf-8")
+        assert data.startswith(head)
+        assert data.endswith(tail)
+        assert f"new line 1{eol}new line 2{eol}" in data
+        if eol == "\n":
+            assert "\r" not in data
+        else:
+            assert data.count("\n") == data.count("\r\n")
+
+    @pytest.mark.parametrize("eol", ["\n", "\r\n"])
+    def test_append_keeps_user_bytes_and_line_ending_style(self, tmp_path, eol):
+        p, head, _ = self._seed(tmp_path, eol, with_block=False)
+        init_mod.inject(str(p), *init_mod.MARK_DOC, "body\n")
+        data = p.read_bytes().decode("utf-8")
+        assert data.startswith(head.rstrip("\r\n"))
+        assert f"{init_mod.MARK_DOC[1]}{eol}" in data
+        if eol == "\n":
+            assert "\r" not in data
+        else:
+            assert data.count("\n") == data.count("\r\n")
+
+    def test_new_file_is_written_with_lf(self, tmp_path):
+        p = tmp_path / "AGENTS.md"
+        init_mod.inject(str(p), *init_mod.MARK_DOC, "body\n", header="# AGENTS")
+        assert b"\r" not in p.read_bytes()
 
 
 class TestInjectMarkerMigration:

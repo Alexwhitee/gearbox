@@ -99,6 +99,18 @@ def test_render_updates_every_block_not_just_the_first():
     assert SP.render(out, SP.SOURCE_PROJECT) == out, "render 必须幂等"
 
 
+def test_apply_writes_lf_line_endings(tmp_path, monkeypatch):
+    """--apply 回填后的文件 MUST 是 LF（仓内 .gitattributes 一律 LF）；Windows 上不指定 newline
+    会把整份文件写成 CRLF，制造整文件 diff。"""
+    probe = tmp_path / "probe.md"
+    probe.write_bytes(f"# T\n\n{SP.START} x -->\n旧版\n{SP.END}\n".encode("utf-8"))
+    monkeypatch.setattr(SP, "skills", lambda: [])
+    monkeypatch.setattr(SP, "PROJECT_TARGETS", [probe])
+    assert SP.main(["--apply"]) == 0
+    data = probe.read_bytes()
+    assert b"\r" not in data and "真人用户明确指示优先".encode("utf-8") in data
+
+
 @needs_human_carriers
 def test_every_block_in_project_targets_matches_source():
     """本仓 CLAUDE.md / AGENTS.md / claude-section.md 的【每一份】块 == 真相源全文。"""
@@ -110,145 +122,3 @@ def test_every_block_in_project_targets_matches_source():
         for s, e in spans:
             got = "".join(lines[s:e + 1]).strip()
             assert got == body, f"{p.name} 第 {s + 1} 行起的托管块与真相源不一致"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# agent 定义投放面（add-g-spec · SA-07）
-#
-# 【为什么单列一组】agent 定义的读者是【被下发的子代理】，受众同 SKILL.md ⇒ 必须配
-# skill 味 SOURCE（含 fan-out 传播纪律那一段）。若被顺手并进 PROJECT_TARGETS，
-# 注入的是项目味源 —— 而 `--check` 照样报绿（它只比「文件 vs 它自己配的源」）。
-# ∴ 「配的是哪个源」必须单独断言，光靠 --check 是照不到的。
-# ══════════════════════════════════════════════════════════════════════════════
-
-EXPECTED_AGENTS = {
-    "g-local-researcher.md",
-    "g-web-researcher.md",
-    "g-spec-writer.md",
-}
-
-
-def test_all_three_agent_defs_are_in_the_delivery_surface():
-    """三个 agent 定义都进了投放面（少一个 = 那份定义的通则永远不会被守）。"""
-    found = {p.name for p in SP.agent_defs()}
-    assert EXPECTED_AGENTS <= found, f"agents 投放面缺了：{EXPECTED_AGENTS - found}"
-
-
-def test_agent_defs_are_paired_with_the_skill_flavored_source():
-    """⭐ 每个 agent 定义配的 MUST 是 skill 味 SOURCE，不是项目味。
-
-    这条是 --check 照不到的那一面：并进 PROJECT_TARGETS 会注入项目味源而 --check 全绿。
-    """
-    pairs = dict(SP.targets())
-    for p in SP.agent_defs():
-        assert pairs[p] == SP.SOURCE, f"{p.name} 配错了源（应为 skill 味 SOURCE）"
-
-
-def test_every_agent_block_matches_the_skill_source_byte_for_byte():
-    """三个定义里的托管块 == skill 味真相源全文（含传播纪律那一段）。"""
-    body = SP.block(SP.SOURCE).strip()
-    for p in SP.agent_defs():
-        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
-        spans = SP._blocks("".join(lines))
-        assert spans, f"{p.name} 没有托管块"
-        for s, e in spans:
-            got = "".join(lines[s:e + 1]).strip()
-            assert got == body, f"{p.name} 第 {s + 1} 行起的托管块与 skill 味真相源不一致"
-
-
-def test_the_delivery_surface_points_at_the_real_agents_dir():
-    """投放面**指的就是那个真实目录** —— 静态断言，不需要往它写任何文件。
-
-    与下一条配对：下一条用 `tmp_path` 证「glob 发现机制有效」，本条证「机制作用在真目录上」。
-    两条合起来 == 旧版「往真实 `agents/` 写探针」那一条的全部证明力，且不碰工作树。
-    """
-    assert SP.AGENT_TARGETS[0] == SP.REPO / "g-spec" / "agents"
-    assert SP.AGENT_TARGETS[0].is_dir()
-
-
-@needs_human_carriers
-def test_a_new_agent_file_turns_check_red(tmp_path, monkeypatch):
-    """⭐⭐ 定点用例：往投放面目录放一个**新** `.md` ⇒ `--check` MUST 变红。
-
-    【它守的是「glob 发现」这个机制本身，不是某三个文件名】
-    把 `agent_defs()` 换成硬编码清单 ⇒ 新文件不在清单里 ⇒ `--check` 看不见它 ⇒ 绿 ⇒ 本用例红。
-    「新增 agent 定义忘了纳入投放面」这个失效场景，只有 glob 做得出来。
-
-    🔴 **探针 MUST NOT 写进真实工作树**：旧版往真实 `g-spec/agents/` 写文件并以
-    `assert not probe.exists()` 起手 —— ① 并行跑 pytest 时两侧互踩（一方的探针触另一方的
-    起手断言）② 测试被中断则残留文件进 **tracked 目录**，且下次 `bash setup.sh` 会把它
-    **软链进全局 `~/.claude/agents/`**。∴ 探针落 `tmp_path`，投放面用 monkeypatch 改指过去；
-    「投放面确实指向真实目录」这一维由上一条**静态断言**承担。
-    """
-    probe_dir = tmp_path / "agents"
-    probe_dir.mkdir()
-    monkeypatch.setattr(SP, "AGENT_TARGETS", (probe_dir, SP.SOURCE))
-
-    probe = probe_dir / "_probe_glob_discovery.md"
-    probe.write_text("---\nname: probe\n---\n\n# probe\n\n（无托管块）\n", encoding="utf-8")
-
-    assert probe in SP.agent_defs(), "glob 没发现新文件 —— agent_defs() 是硬编码清单？"
-    assert SP.main(["--check"]) == 1, "新增未纳入托管的 agent 定义，--check 居然是绿的"
-
-    probe.unlink()
-    assert SP.main(["--check"]) == 0, "移走探针后应恢复全绿"
-
-
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 广审镜定义投放面（absorb-gstack-autoplan · design DD7「同源机制=模板注入」）
-#
-# 第二个独立 marker 家族（g:broad-mirror-def），与「四条通则」marker 同机制
-# （真相源唯一 + 注入机械化 + 漂移机械可查），但目的不同：守的是 spec-review 与
-# roadmap 两个 SKILL 的「广审镜（strategy/plan-eng）职责定义」逐字节相同——防止未来
-# 有人手改其中一份、两处口径悄悄分叉（旧候选「prose 引用」零机械守、「复制+parity」
-# 仍需人工双改，均被 design 砍掉，见 decision-memo Q2）。
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-
-
-
-@needs_human_carriers
-def test_both_skills_carry_the_broad_mirror_def_byte_for_byte():
-    """⭐ 两个 SKILL.md 的托管块与真相源逐字节一致——漂了就该被 --check 抓到。"""
-    assert SP.main(["--check"]) == 0
-    body = SP.block(SP.SOURCE_BROAD_MIRRORS).strip()
-    for p, _ in SP.broad_mirror_targets():
-        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
-        spans = SP._blocks("".join(lines), SP.BROAD_MIRROR_START, SP.BROAD_MIRROR_END)
-        assert spans, f"{p.name} 没有 broad-mirror-def 托管块"
-        for s, e in spans:
-            got = "".join(lines[s:e + 1]).strip()
-            assert got == body, f"{p.name} 第 {s + 1} 行起的托管块与真相源不一致"
-
-
-@needs_human_carriers
-def test_broad_mirror_drift_turns_check_red_and_apply_fixes_it(tmp_path):
-    """⭐⭐ 定点用例：托管块被手改坏 ⇒ `--check` MUST 变红；`--apply` MUST 修复。
-
-    与「四条通则」家族的漂移测试同构，验证的是【第二个独立 marker 家族】也接入了
-    同一套 --check/--apply 门禁——不是只有 principles 一家被守。探针落 tmp_path，
-    不碰真实工作树（同 test_a_new_agent_file_turns_check_red 的隔离纪律）。
-    """
-    probe = tmp_path / "SKILL.md"
-    probe.write_text(
-        "# probe\n\n"
-        f"{SP.BROAD_MIRROR_START} v1 -->\n旧版占位内容\n{SP.BROAD_MIRROR_END}\n",
-        encoding="utf-8",
-    )
-
-    original = SP.BROAD_MIRROR_TARGETS
-    try:
-        SP.BROAD_MIRROR_TARGETS[:] = [probe]
-        assert SP.main(["--check"]) == 1, "托管块内容与真相源不符，--check 居然是绿的"
-        assert SP.main(["--apply"]) == 0
-        assert SP.main(["--check"]) == 0, "--apply 后应恢复全绿"
-        assert "旧版占位内容" not in probe.read_text(encoding="utf-8")
-    finally:
-        SP.BROAD_MIRROR_TARGETS[:] = original
-
-
-
-

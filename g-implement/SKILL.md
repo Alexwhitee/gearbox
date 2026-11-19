@@ -170,7 +170,7 @@ impl-pipeline: tickets
 ### Task 1: <ticket 名>
 
 **Blocked-by:** none
-**R-ID:** R2
+**R-ID:** 1.1, 1.2
 
 <端到端行为描述：从用户/系统可观察结果写，不含实现代码>
 
@@ -180,7 +180,7 @@ impl-pipeline: tickets
 ### Task 2: <ticket 名>
 
 **Blocked-by:** 1
-**R-ID:** R3, R4
+**R-ID:** 2.1
 
 ...
 
@@ -196,30 +196,33 @@ impl-pipeline: tickets
 
 规则：
 - 标题 `### Task N:`，N 从 1 **连续**编号；`Blocked-by` 写逗号分隔票号或 `none`。
+- **R-ID = 该票实现的 `tasks.md` 条目编号**（`- [ ] 1.1 …` 里的 `1.1`），逗号分隔；`tasks.md` 每个编号条目至少被一张功能票认领，R-ID 不得引用不存在的编号。收尾票写 `all`。
 - **恰好一张** `R-ID: all` 收尾票，其 `Blocked-by` **逐一列出全部其余票号**（不得写 `all` 之类占位）。
 - 首次提交后结构不可变：MUST NOT 重号/重排/删除/复用已出的 Task 号；重规划只能追加新号。
-- 预算自检：`python3 <skills_root>/g-implement/scripts/impl_route.py plan-budget --plan {change_dir}/tickets.md`，报违规则改票后重跑。
+- 预算与契约自检：`python3 <skills_root>/g-implement/scripts/impl_route.py plan-budget --plan {change_dir}/tickets.md`（自动读同目录 `tasks.md`）。它同时校验预算、收尾票契约（与 gate 同一判据）与 R-ID 覆盖；报违规则改票后重跑，退出 0 才可提交。
 - ≥2 种切分方案且无客观判据 → 写进 `impl-reports/planning-decisions.md`（选项 + 推荐 + 三面后果 + 主次判定），**MUST NOT 以自评置信硬选**。
-- 落盘后提交（这次提交是完成判据窗口的起点，必须是 tickets.md 的首次提交）：
+- 落盘后提交（这次提交是完成判据窗口的起点，必须是 tickets.md 的首次提交；先按「checkpoint 纪律」核工作树）：
   `bash ~/.g/hack/checkpoint-commit.sh "{change}:plan" "出 ticket 落盘"`，然后返回。
 
 ## mode=exec 执行
 
 恢复执行时，只有 gate 的 `done_tasks` 可跳过。票已勾选或已有实现、但缺完成标签时，先读现有代码与报告，续做双轴自审和验收；仅补未完成的实现，不盲目重写。证据通过后再提交该票的完成标签。
 
-**选票**：`python3 <skills_root>/g-implement/scripts/impl_route.py frontier --plan {change_dir}/tickets.md --done <done_tasks 或 none>`，取返回的可执行票号中最小者，**逐票串行**。每票五步：
+**选票**：`python3 <skills_root>/g-implement/scripts/impl_route.py frontier --plan {change_dir}/tickets.md --done <done_tasks 或 none>`，取返回的可执行票号中最小者，**逐票串行**。frontier 自动排除段内写了 `BLOCKED:` 行的票（stderr 的 `note:` 列出被排除的票）；**退出码 4** = 剩余票全被 BLOCKED 挡住，按停点停止本轮并原样上报其 `cause:`，MUST NOT 删 BLOCKED 行自行重派。每票五步：
 
 1. **实现**：按票内行为描述与验收标准写代码和测试，不越票范围（越界冲动 → 记 issues todo，不顺手做）。
 2. **双轴自审**（两轴各独立过一遍）：
    - Standards 轴：`<规则根>/code-checklists/` 中命中领域的条目 + 本仓既有约定（命名 / 错误处理 / 一致性）；
    - Spec 轴：票目标与每条验收是否**真**达成——以「不信任自己刚写的代码」的心态逐条找反例。
-3. 严重度与放行唯一口径见 `<规则根>/code-checklists/code-review-base.md`「放行口径」：P0/P1 未解决必须 BLOCKED，仅 P2 可带理由与 issue 延后。自审发现 P0/P1 → 当场修，修后重审，硬上限 2 轮；仍不过 → 本票 BLOCKED（在 tickets.md 该票下写一行 `BLOCKED: <原因>`），停止本轮。
+3. 严重度与放行唯一口径见 `<规则根>/code-checklists/code-review-base.md`「放行口径」：P0/P1 未解决必须 BLOCKED，仅 P2 可带理由与 issue 延后。自审发现 P0/P1 → 当场修，修后重审，硬上限 2 轮；仍不过 → 本票 BLOCKED（在 tickets.md 该票段内写一行 `BLOCKED: <原因>`），停止本轮。BLOCKED 行由**人**处理阻塞原因后删除，删除后该票才会重新被 frontier 派发；gate 在 CONTINUE_IMPL 前用同一解析判阻塞并停下。
 4. **证据**：跑验收命令，写 `{change_dir}/impl-reports/task<N>-<slug>.md`，每个测试层一行：
    `<层> | <命令原文> | <退出码> | <用例数> | <SHA>`
-   - `<SHA>` = 跑测试时的 `git rev-parse --short HEAD`；`<用例数>` 填数字或 `未知`，**0 用例的通过不算通过**；
-   - 退出码非 0：本票引入的回归 → 修复后重跑，MUST NOT 落红行充数；仓内既有红测（base 上同样红）→ 入池记录（同下方「既有问题」）并在报告 `## 既有红测` 小节写一行 `<层> | <失败用例标识> | <issue id>`，放行；flaky（复跑即绿）→ 注明并放行；环境故障 → 本票 BLOCKED。
+   - `<SHA>` = 跑测试时的 `git rev-parse --short HEAD`；`<用例数>` 填数字或 `未知`，**0 用例的通过不算通过**；填 `未知` 时 MUST 在该行下方附该命令原始输出的末尾（≥ 20 行，原样贴入代码块），供 verify 复核「确有用例在跑」——没有原始输出的 `未知` 视同证据缺失；
+   - 退出码非 0：本票引入的回归 → 修复后重跑，MUST NOT 落红行充数；flaky（复跑即绿）→ 注明并放行；环境故障 → 本票 BLOCKED；
+   - 疑似仓内既有红测 → **必须在 base 上真复跑确认**，不得凭印象判定：`git worktree add --detach <临时目录> <base_sha>`（`base_sha` 取 `branch_context.py show` 的固定起点），在该目录跑同一用例，记退出码后 `git worktree remove --force <临时目录>`。base 上同一用例同样失败才算既有红测：入池记录（同下方「既有问题」），并在报告 `## 既有红测` 小节写一行
+     `<层> | <失败用例标识> | <issue id> | <base_sha> | <base 复跑命令> | <base 退出码>`（`base_sha` 写完整 40 位，`base 退出码` 写实际值，非 0），放行；base 上通过 ⇒ 是本 change 引入的回归，按回归修复。
    - 该票无对应测试层：`<层> | — | 不在本票命中域 | <归域依据>`。
-5. **完成标记**（双轴自审通过且证据齐后才做）：勾满 tickets.md 该票的全部验收复选框，然后
+5. **完成标记**（双轴自审通过且证据齐后才做）：勾满 tickets.md 该票的全部验收复选框，按「checkpoint 纪律」核工作树，然后
    `bash ~/.g/hack/checkpoint-commit.sh "{change}:task<N>-<slug>" "<一句话描述>"`
    - 产出提交信息 `checkpoint({change}:task<N>-<slug>): …`；`task<N>-` 后**必须**有 slug（`task3` 无尾随横杠不会被识别）；
    - 自检：`git log --oneline | grep "checkpoint({change}:task<N>-"` 必须有输出。
@@ -227,6 +230,7 @@ impl-pipeline: tickets
 **收尾票**（全部功能票完成后执行）：
 1. 起手确认源码已提交；源码有脏改动时先处理并提交，再跑测试。跑分域判定，把 JSON **原样**贴进 `impl-reports/task<N>-<slug>.md` 报告头（MUST NOT 手工转录）：
    `python3 <skills_root>/g-implement/scripts/impl_route.py suite-scope --root "$(git rev-parse --show-toplevel)" --change {change}`
+   退出 6 → 按 stderr 的 `problem/cause/fix` 修正（如 `openspec/config.yaml` 的域路径是目录却没写尾斜杠 `/`，会让目录下文件静默落进默认域），修正后重跑，MUST NOT 绕过判定手选测试层。
 2. 跑 JSON `layers` 中的层（取 `full` 档）。`unconfigured_layers` 列出的层只是**未配置命令**：主 session 必须查 CI、README、testing-strategy.md 与仓内既有测试约定，找到命令后实际执行，并记录命令与来源；查明确无该层才记未覆盖并附依据。不得把空 `layers` 当成没有测试，不解析构建文件另造发现器。显式配置 domains 的层集合仍按命中域执行，不扩大到未命中域。
    每层一行证据，格式同上；不在命中域的层写 `<层> | — | 不在本 change 命中域 | <归域依据>`，本仓无该层写 `<层> | — | 未覆盖（本仓无此层） | <查证依据>`。
 3. 报告头原始 JSON 的完整 `head` 是收尾验证基准，即使没有任何可执行测试层也必须保留。所有通过行的 SHA 必须解析到该 head；代码或测试配置中途改变时重新捕获 JSON 并整组重跑。
@@ -234,8 +238,14 @@ impl-pipeline: tickets
 
 **既有问题记录**：先 `issues_v2.py --root . scan --json --all` 按 module+summary 查重（含已关闭）；同一问题复用其 id；拿不准就新增 `issues_v2.py --root . add --pool bug --json '{"module":"…","summary":"既有问题：…","source_change":"{change}"}'`。recorder 失败 → 写「待人工补录」，MUST NOT 写假 id。
 
+## checkpoint 纪律
+
+- **每次 checkpoint 前先 `git status --porcelain`**，核验工作树**只含本票预期改动**（本票的代码与测试、本票报告、tickets.md 勾框；出票时只含 tickets.md 与 planning-decisions.md）；含预期外条目（无关改动、测试残留产物、未忽略的本地文件）⇒ **halt 报告**，不提交——普通模式的 `checkpoint-commit.sh` 是 `git add -A`，会把它们一并卷进完成提交、代码审 diff 与 code 域指纹。
+- 预期外条目由人决定去向（移走 / 加入 .gitignore / 确认属于本票），MUST NOT 自行删除用户文件。
+
 ## 停点
 
 - 出票落盘并提交后（返回 done 重跑 gate）。
-- 某票 BLOCKED：停止本轮，原样上报原因。
+- 某票 BLOCKED（含 frontier 退出 4）：停止本轮，原样上报原因；等人处理并删除 BLOCKED 行后再续。
+- checkpoint 前工作树含预期外条目：停止本轮，列出条目等人处理。
 - 其余情况一律继续；决策进 `impl-reports/planning-decisions.md`，不打断。

@@ -236,7 +236,7 @@ audit 不产报告文件。细节见 `references/audit-prompt.md`。
 
 ```
 g-adr 未安装：~/.claude/skills/g-adr/scripts/adr.py 不存在；
-运行 checkout 尚未跑 setup.sh；先在 ~/.skills/g-skills 跑 bash setup.sh 再重试
+运行 checkout 尚未跑 setup.sh；先在运行 checkout（当初跑 setup.sh 安装本工具的那个 clone；Unix `readlink ~/.g/workflow`、Windows `~/.g/workflow-path` 可查位置）跑 bash setup.sh 再重试
 ```
 
 ## 退出码

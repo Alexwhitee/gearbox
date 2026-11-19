@@ -203,8 +203,8 @@ python3 "$SKILL_DIR/scripts/sad_scaffold.py" init --root "$REPO"
 
 按退出码分流：
 
-- **exit 3（无 `openspec/` 布局）**：**原样转述** stderr 的 preflight 指引（先在运行 checkout 跑
-  `bash ~/.skills/g-skills/setup.sh`，再在消费仓会话执行 `/g-init`，装完回来重跑本命令）——
+- **exit 3（无 `openspec/` 布局）**：**原样转述** stderr 的 preflight 指引（先在运行 checkout（当初跑 setup.sh 安装本工具的那个 clone；Unix `readlink ~/.g/workflow`、Windows `~/.g/workflow-path` 可查位置）跑
+  `bash setup.sh`，再在消费仓会话执行 `/g-init`，装完回来重跑本命令）——
   MUST NOT 自造半套布局、MUST NOT 静默继续。（有 `openspec/` 但缺 `adr/`/`CONTEXT.md` 时脚本会打印「首次
   创建 …」并最小初始化，属正常，照实转述即可。）
 - **exit 4（`sad.md` 已存在）**：**显式向操作者区分 continue / replan 后**带 `--on-exists` 重跑，MUST NOT

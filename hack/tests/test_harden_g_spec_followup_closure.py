@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -67,7 +68,7 @@ def test_change_root_resolver_survives_archive(tmp_path: Path) -> None:
 
 def _todos() -> dict[str, dict[str, object]]:
     proc = subprocess.run(
-        ["python3", str(TODO_SCRIPT), "--root", str(ROOT), "scan", "--pool", "todo", "--all", "--json"],
+        [sys.executable, str(TODO_SCRIPT), "--root", str(ROOT), "scan", "--pool", "todo", "--all", "--json"],
         check=True,
         capture_output=True,
         text=True,

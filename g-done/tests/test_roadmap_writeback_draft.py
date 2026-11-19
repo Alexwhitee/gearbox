@@ -330,7 +330,7 @@ SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "roadmap_write
 
 
 def _run(root, change, extra=None):
-    cmd = ["python3", SCRIPT, "--change", change, "--root", str(root), "--branch", "feat/t"]
+    cmd = [sys.executable, SCRIPT, "--change", change, "--root", str(root), "--branch", "feat/t"]
     if extra:
         cmd += extra
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

@@ -8,18 +8,32 @@ import shutil
 from pathlib import Path
 
 
+def _git_bash_candidates():
+    """Git for Windows 的 bash 候选：先标准安装位置，再从 git 可执行文件所在安装树推导。
+
+    后者覆盖非默认安装目录（如 D:\\dev-software\\git\\Git）与 git.exe 的各种落点
+    （cmd\\、mingw64\\bin\\、ucrt64\\bin\\）——只认 Program Files 时这些机器会退回 PATH 上的 bash，
+    而 GitHub windows runner 上 PATH 的 bash 可能是 System32 的 WSL 启动器。
+    """
+    program_files = (
+        os.environ.get("ProgramW6432"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+    )
+    for root in filter(None, program_files):
+        yield Path(root) / "Git"
+    git = shutil.which("git")
+    if git:
+        yield from list(Path(git).resolve().parents)[:3]
+
+
 def bash_executable() -> str:
     """Return Git Bash on Windows, avoiding the System32 WSL launcher."""
     if os.name == "nt":
-        program_files = (
-            os.environ.get("ProgramW6432"),
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramFiles(x86)"),
-        )
-        for root in filter(None, program_files):
+        for root in _git_bash_candidates():
             # bin/bash.exe is a launcher that prepends its own PATH, hiding
             # command stubs supplied by subprocess tests. Use the shell itself.
-            candidate = Path(root) / "Git" / "usr" / "bin" / "bash.exe"
+            candidate = root / "usr" / "bin" / "bash.exe"
             if candidate.is_file():
                 return str(candidate)
 

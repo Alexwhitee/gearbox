@@ -56,10 +56,30 @@ def commit_all(root, msg):
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", msg, "--allow-empty")
 
-def mkchange(root, name="demo"):
+def mkchange(root, name="demo", memo=True):
+    """建 change 目录。`memo=True`（缺省）同时落一份合格的决策纪要——gate 在送设计审前
+    要求它（B6），绝大多数用例关心的是后续阶段，不该各自重复造纪要；专测纪要门的用例传
+    `memo=False`。纪要不在 design 监视集（proposal/design/specs）内，也在 code 域（openspec/
+    外）之外，不影响任何内容锚。"""
     d = root / "openspec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
+    if memo:
+        write_memo(d, name)
     return d
+
+
+def write_memo(d, name="demo", decisions="- **D1** 采用方案 A（依据：…）",
+               constraints="- **C1** 约束（证据锚：file:1）", decision_hash="sha256:" + "0" * 64):
+    """合格决策纪要：两个必填小节非空 + frontmatter `decision_hash` 非空（= 已定稿）。
+    `decision_hash=None` 时不写该字段（未定稿负例）。"""
+    front = ["---", "schema_version: 1", f"change: {name}", f"branch: feat/{name}"]
+    if decision_hash is not None:
+        front.append(f"decision_hash: {decision_hash}")
+    front.append("---")
+    (d / _sg_module.MEMO_FILENAME).write_text(
+        "\n".join(front) + f"\n\n# 决策纪要 · {name}\n\n"
+        f"## 拍板决策\n\n{decisions}\n\n## 承重约束\n\n{constraints}\n", encoding="utf-8")
+    return d / _sg_module.MEMO_FILENAME
 
 # ── [harden-gate-git-layer Task1 · tasks 4.1] 录锚模型的测试基座 ────────────────
 # 旧 fixture 一次 commit_all 把「报告」与「它审查的对象」放进同一个根提交 ⇒ 结构上不存在

@@ -5,6 +5,10 @@ import json
 import sys
 from pathlib import Path
 
+for _s in (sys.stdout, sys.stderr):
+    try: _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception: pass
+
 CONTEXT_FILE = ".g-branch.json"
 FIELDS = {"source_branch", "work_branch", "base_sha", "merge_target"}
 
@@ -62,9 +66,16 @@ def locate(root, change):
         except ValueError:
             raise ValueError("change 目录逃逸")
         return directory, None
+    # 〔A2〕已 `openspec archive`、归档尚未提交：约定文件只在工作树里（与 ship_gate 同口径、同优先级）。
+    pending = _gate().uncommitted_archive_dirs(root, change)
+    if len(pending) == 1:
+        return root / "openspec/changes/archive" / pending[0], None
+    if len(pending) > 1:
+        raise ValueError("工作树里有多个未提交的归档目录，无法唯一定位本 change")
     dirs = _gate().archived_dirs_in_tree(root, "HEAD", change)
     if len(dirs) != 1:
-        raise ValueError("无法唯一定位当前 HEAD 中的归档 change")
+        raise ValueError("无法唯一定位当前 HEAD 中的归档 change（active 目录也不在：若刚切走工作分支，"
+                         "先 git checkout 回本 change 的 work_branch）")
     return root / "openspec/changes/archive" / next(iter(dirs)), "HEAD"
 
 

@@ -1,26 +1,22 @@
-"""把托管区块同步进目标文件——目前管两个独立 marker 家族：「四条通则」（principles）与
-「广审镜定义」（broad-mirror-def，absorb-gstack-autoplan · design DD7）。
+"""把「四条通则」托管区块（principles marker 家族）同步进目标文件。
+（「广审镜定义」broad-mirror-def 家族的注入器已退役：g-roadmap 里那份即单一源，本脚本不再管。）
 
 【为什么是内联复制，不是一行指针】
 skill 是【独立分发单元】——symlink 装到 ~/.claude/skills/，跑在别的项目里，
 那里读不到本仓的 CLAUDE.md。而「四条通则」是【每问一句话都要触发的立场】，
-立场 MUST 在 prompt 里，不能藏在一个「模型可能不去 Read」的指针后面。「广审镜定义」道理
-类似但对象不同——g-spec-review 与 g-roadmap 两个 SKILL 派生的广审双镜必须审
-同一套职责划分，不能各自维护一份、悄悄分叉（同 DD7「同源机制=模板注入」，优于 prose 引用
-或复制+parity 两个被砍掉的候选）。
+立场 MUST 在 prompt 里，不能藏在一个「模型可能不去 Read」的指针后面。
 
 【那怎么防漂移】
-每个家族真相源唯一（principles 见下方 SOURCE / SOURCE_PROJECT，broad-mirror-def 见
-SOURCE_BROAD_MIRRORS），注入机械化（本脚本），漂移机械可查（--check）。
+真相源唯一（见下方 SOURCE / SOURCE_PROJECT），注入机械化（本脚本），漂移机械可查（--check）。
 —— 这正是 CLAUDE.md 基准 1：能用「可固化规则 + 脚本」保证的一致性，优先机械化。
 
 【语法面】
-每个家族只认两个 marker token（start / end）+ 首个 H1（无既有块时的插入锚点）。都是
+只认两个 marker token（start / end）+ 首个 H1（无既有块时的插入锚点）。都是
 【单行字面量匹配】，语法面有界（基准 5）。MUST NOT 演化成「解析 Markdown 结构」。
 
 用法：
-    python3 hack/sync_principles.py --check     # 任一家族漂了 → exit 1（CI / pytest 用）
-    python3 hack/sync_principles.py --apply     # 回填全部家族
+    python3 hack/sync_principles.py --check     # 任一投放面漂了 → exit 1（CI / pytest 用）
+    python3 hack/sync_principles.py --apply     # 回填全部投放面
 """
 import argparse
 import os
@@ -35,13 +31,13 @@ REPO = Path(__file__).resolve().parent.parent
 ASSETS = REPO / "g-init" / "assets"
 
 # 【两个源，因为受众不同 —— 不是同一段话的两份拷贝】
-#   skill 味  → 读者是 skill 自己（含 fan-out / outside-voice 的传播纪律、SKILL 内部口径）
+#   skill 味  → 读者是 skill 自己（SKILL 内部口径）
 #   项目味    → 读者是「在这个项目里干活的 agent」（不该出现 skill 内部的话）
 # 三条 headline 一条不许少 —— hack/tests/ 机械守（加第四条时两个源一起红）。
 #
 # 【为什么源在 assets/ 而不在 hack/】（CLAUDE.md：assets/ 是 bundle 的唯一权威源）：
-#   - skill 味的源【就是】outside-voice.sh 要 cat 的那个文件 —— setup.sh 已经把 assets/hack/*.md
-#     装进 ~/.g/hack/。源放别处 = 凭空多一份拷贝 = 凭空多一个漂移面。
+#   - skill 味的源【就是】setup.sh 随 assets/hack/*.md 装进 ~/.g/hack/ 的那份通则文件。
+#     源放别处 = 凭空多一份拷贝 = 凭空多一个漂移面。
 #   - 项目味的源【就是】init 推给消费项目的那份 snippet 的一部分。
 SOURCE = ASSETS / "hack" / "skill-principles.md"                    # skill 味（全局安装的通则源）
 SOURCE_PROJECT = ASSETS / "snippets" / "principles-project.md"      # 项目味
@@ -55,20 +51,9 @@ PROJECT_TARGETS = [
     ASSETS / "snippets" / "claude-section.md",
 ]
 
-# agent 定义（~/.claude/agents/ 的投放面）= 【目录, 该用哪个源】。
-#
-# 【为什么是独立的一项，不并进 PROJECT_TARGETS】
-#   PROJECT_TARGETS 固定配 SOURCE_PROJECT（项目味）。agent 定义的读者是【被下发的子代理】,
-#   受众与 SKILL.md 相同 ⇒ 必须用 skill 味 SOURCE（含 fan-out 传播纪律那一段）。
-#   直接加进 PROJECT_TARGETS = 给子代理注入错误味源，而 --check 照样报绿。
-#
-# 【为什么成员靠 glob 发现，不写死清单】
-#   写死清单的话，「新增一个 agent 定义却忘了纳入投放面」这个失效场景【做不出来】——
-#   新文件不在清单里，--check 看不见它，绿。glob 使新文件自动进入检查范围。
-AGENT_TARGETS = (REPO / "g-spec" / "agents", SOURCE)
-
 START = "<!-- g:principles:start"
 END = "<!-- g:principles:end -->"
+LF = chr(10)
 
 def block(src):
     """真相源的内容【就是】要注入的文本。零解析。"""
@@ -80,16 +65,6 @@ def skills():
                   if p.is_dir() and (p / "SKILL.md").is_file())
 
 
-def agent_defs():
-    """AGENT_TARGETS 目录下的全部 agent 定义 —— 【每次调用重新 glob】。
-
-    不在 import 期定死：否则「往 agents/ 放一个新 .md → --check 必红」这个场景
-    在同一个进程里测不出来（测试写完文件，模块级常量早已算好，看不见它）。
-    """
-    d, _ = AGENT_TARGETS
-    return sorted(d.glob("*.md")) if d.is_dir() else []
-
-
 def _blocks(text, start=START, end=END):
     """→ [(start_idx, end_idx)]：文本里【全部】托管块的行区间（含首尾 marker 行）。
 
@@ -98,10 +73,8 @@ def _blocks(text, start=START, end=END):
     只更新首个 ⇒ 第二份静默留旧版 ⇒ 同一文件里两份通则自相矛盾，而 --check 照样报绿。
     这是【假绿】，不是省事。
 
-    【为什么 start/end 是参数、不是硬编码全局】：本文件现管两个独立 marker 家族
-    （principles / broad-mirror-def），字面量不同、扫描逻辑相同——参数化复用，
-    不新写一份平行实现（基准 1：能机械化的一致性别靠两份手写代码各自维护）。
-    默认值保持向后兼容——现有调用点 `_blocks(text)` 无需改动。
+    【为什么 start/end 是参数】：marker 家族曾不止一个，扫描逻辑参数化复用；
+    默认值即 principles 家族——调用点 `_blocks(text)` 无需改动。
     """
     lines = text.splitlines(keepends=True)
     out, cursor = [], 0
@@ -117,16 +90,7 @@ def _blocks(text, start=START, end=END):
 
 
 def _insert_anchor(lines):
-    """无块时的插入点：首个 H1 之后；无 H1 则 frontmatter 之后。
-
-    【只服务 principles 家族】：broad-mirror-def 的两个投放面（DD7 固定两个 SKILL）
-    MUST 已手工放好一对空 marker（`<!-- g:broad-mirror-def:start -->` 紧跟
-    `<!-- g:broad-mirror-def:end -->`）在各自 SKILL.md 里想要的落位——那两个
-    位置各有各的上下文（spec-review 挂在广审镜小节、roadmap 挂在 review 小节），
-    不该也不能靠「首个 H1 之后」这个通用兜底猜。若 broad_mirror_targets() 里的文件
-    缺失该 marker，`render()` 会退回本函数、把内容插到 H1 后——那是**未装配好投放面**
-    的信号，不是本函数支持的正常路径。
-    """
+    """无块时的插入点：首个 H1 之后；无 H1 则 frontmatter 之后。"""
     anchor = 0
     if lines and lines[0].strip() == "---":
         for j in range(1, len(lines)):
@@ -164,7 +128,6 @@ def targets():
     """→ [(文件, 该用哪个源)] —— 「四条通则」marker 家族的投放面。"""
     pairs = [(p, SOURCE) for p in skills()]
     pairs += [(p, SOURCE_PROJECT) for p in PROJECT_TARGETS]
-    pairs += [(p, AGENT_TARGETS[1]) for p in agent_defs()]
     return pairs
 
 
@@ -211,11 +174,14 @@ def main(argv=None):
                 display = str(p)
             drift.append(display)
             if args.apply:
-                p.write_text(want, encoding="utf-8")
+                # newline 显式写 LF：want 由通用换行读入（已是 LF）；不指定时 Windows 会写成 CRLF，
+                # 每次 --apply 都把整份 SKILL.md 改成 CRLF（仓内 .gitattributes 约定一律 LF）。
+                with open(p, "w", encoding="utf-8", newline=LF) as fh:
+                    fh.write(want)
 
     absent_note = f"（{len(absent)} 个投放面不在本 checkout，已跳过：{', '.join(absent)}）" if absent else ""
     if not drift:
-        print(f"[sync_principles] ✅ {total} 个投放面全部与真相源一致（四条通则 + 广审镜定义）{absent_note}")
+        print(f"[sync_principles] ✅ {total} 个投放面全部与真相源一致（四条通则）{absent_note}")
         return 0
 
     if args.apply:
@@ -224,7 +190,7 @@ def main(argv=None):
             print(f"   {d}")
         return 0
 
-    print("[sync_principles] FAIL: 这些文件的托管块（四条通则 / 广审镜定义）缺失或已漂移：", file=sys.stderr)
+    print("[sync_principles] FAIL: 这些文件的托管块（四条通则）缺失或已漂移：", file=sys.stderr)
     for d in drift:
         print(f"   {d}", file=sys.stderr)
     print("   修：python3 hack/sync_principles.py --apply", file=sys.stderr)

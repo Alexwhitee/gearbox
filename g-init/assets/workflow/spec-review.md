@@ -4,7 +4,7 @@
 
 ## 一、检查范围
 
-设计审读取 proposal/design/specs、decision-memo 和引用的实际代码，核对需求、承重约束、方案可行性与跨文档一致性。代码审按需求与票验收核对 diff，并读取被修改代码的调用方和边界。
+设计审读取 proposal/design/specs、tasks（需求 ↔ 任务双向追溯）、decision-memo 和引用的实际代码，核对需求、承重约束、方案可行性与跨文档一致性；缺定稿纪要的 change 不做设计审（gate 判 REFUSE_START next=g-spec）。代码审按需求与票验收核对 diff，并读取被修改代码的调用方和边界。
 
 config 的 context/rules 是生成软约束，不是已经完成的机械验证。CLI validate 未覆盖的结构、完整性与一致性，仍需读回核验，不能凭文件存在或配置声明跳过。
 
@@ -23,7 +23,8 @@ config 的 context/rules 是生成软约束，不是已经完成的机械验证�
 
 ## 四、可验证的边界
 
-- 设计批准后由 anchor_writeback.py 写 ship-gate frontmatter，禁止手写指纹。
+- 设计批准后由 anchor_writeback.py 写 ship-gate frontmatter，禁止手写指纹；批准锚 MUST 带 `--expected-ref <送审提交>`，送审后设计又改则脚本拒写、须重新送审。
+- 设计门批准后再改 design/specs：实现前 gate 判失鲜拒绝，实现后 gate JSON 带非阻塞 `design_drift`，均须交人重审或明确确认。
 - 代码审与 verify 在检查前捕获完整提交 SHA，写代码 PASS 必传 --expected-ref，且代码仍与该版本一致；改代码后必须重审或重验。
 - gate 验报告格式、内容新鲜度、票完成标签和 defer 对账；不能证明评审确实发生、测试输出真实或需求语义正确。
 - 设计 HARD-GATE 保留；不能用内联自审代替人的明确批准。

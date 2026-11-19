@@ -3,13 +3,12 @@
 """impl_route.py — g-implement tickets 调度 helper（stdlib-only + 外部 yq 二进制，只读、零副作用）
 
 本文件是 tickets 管线（唯一实现管线，见 adr/0042）的调度基础设施，提供三个子命令：
-    `frontier`     —— 按 Blocked-by 拓扑算 next-ready ticket 号
-    `task-text`    —— 机械抠出单张 Task 段原文落盘，供 dispatch prompt 引用文件路径
-                       （替代编排层手抄 Task N 段落全文——手抄=转录风险）
+    `frontier`     —— 按 Blocked-by 拓扑算 next-ready ticket 号（排除写了 `BLOCKED:` 停点行的票）
     `suite-scope`  —— 按 diff 路径归域求值收尾票测试层集合（`adr/0045`；design.md 决策 §2）
-    `plan-budget`  —— 出票后统计预算票 / 迁移批次 / 收尾票，超限或豁免不合规即报（T249）
-`frontier`/`task-text` 共用同一份 `parse_blocked_by` 拓扑解析（Blocked-by 依赖图单一源，
-基准 5：无界语法禁手搓）。
+    `plan-budget`  —— 出票后统计预算票 / 迁移批次 / 收尾票，校验收尾票契约与 R-ID 覆盖（T249）
+`frontier`/`plan-budget` 共用同一份 `parse_blocked_by` 拓扑解析（Blocked-by 依赖图单一源，
+基准 5：无界语法禁手搓）。原 `task-text` 子命令服务于已移除的子代理派发（dispatch prompt
+引用 Task 原文文件），单 session 管线下无调用方，已删除。
 
 [scope-aggregate-suite-by-diff-domain Task 1] `suite-scope` 重新内联 `_yq()`（骨架同
 `g-init/assets/workflow/tools/anchor_lint.py`，不引 `ship_gate.GateIndeterminate`——
@@ -20,11 +19,10 @@ stderr `problem/cause/fix` + `EXIT_ROUTE_STOP`）。`_yq()` 消费点计数见
 [remove-superpowers-pipeline] 本文件原含「管线路由三跳」（config 键 → plan frontmatter marker →
 缺省，二选一派发 tickets/superpowers）——tickets 成为唯一管线后，route 子命令与全部路由函数
 （`read_config_pipeline` / `read_plan_marker` / `resolve_pipeline` / `RouteStop` / `_get_plan_sha`
-/ `_yq`）已整体切除（design.md 决策，adr/0042 supersede adr/0033）。保留半场（`frontier` /
-`task-text` 子命令、`parse_blocked_by`、`_detect_cycle`、`next_ready`、`extract_task_text`、
-`TopoError`、`BLOCKED_BY_RE`）接口与行为逐字不变——`g-ship/scripts/ship_gate.py` 经既有
-sibling-import 消费 `parse_blocked_by`/`TopoError`（收尾票 Blocked-by 校验单一源），本次切除
-对其零感知。
+/ `_yq`）已整体切除（design.md 决策，adr/0042 supersede adr/0033）。保留半场（`frontier`
+子命令、`parse_blocked_by`、`_detect_cycle`、`next_ready`、`TopoError`、`BLOCKED_BY_RE`）接口
+与行为不变——`g-done/scripts/ship_gate.py` 经既有 sibling-import 消费
+`parse_blocked_by`/`TopoError`（收尾票 Blocked-by 校验单一源），本次切除对其零感知。
 
 [impl-review-fix F4] 唯一例外：**fenced code block 的围栏词法**从 ship_gate 引入
 （`FenceTracker`，只读纯函数）。原先此处手抄 `line.lstrip().startswith("```")` 并在注释里
@@ -75,6 +73,10 @@ else:
 # gate 侧字面见 ship_gate.py:137 `EXIT_OK, EXIT_REFUSE, EXIT_BLOCKED, EXIT_VFAIL, EXIT_UNKNOWN
 # = 0, 3, 4, 5, 6`）。
 EXIT_ROUTE_STOP = 6
+# frontier 专用：剩余未完成票全部被 `BLOCKED:` 停点行（或其依赖链）挡住、无票可派。
+# 语义对齐 ship_gate.EXIT_BLOCKED=4——与「拓扑/输入非法」的 6 分开，调用方据此停下上报，
+# 而不是当成 plan 坏了去修票。
+EXIT_FRONTIER_BLOCKED = 4
 
 # [impl-review-fix] 与 ship_gate.TASK_TITLE_RE 逐字一致（^### Task (\d+):，单空格、无 M 标志——
 # 本模块逐行扫描不需要 MULTILINE）。排版漂移（`###Task 1:`/`### Task  1:`）不计任务，行为与
@@ -225,58 +227,6 @@ def next_ready(deps: Dict[int, Set[int]], done: Iterable[int]) -> List[int]:
 
 
 # ---------------------------------------------------------------------------
-# 单张 Task 原文机械抠取（仿 matt to-tickets 的 task-brief 脚本），
-# 供 dispatch prompt 引用文件路径，不再要求编排层手抄 Task N 段落全文
-# （手抄=转录风险；此前 SKILL.md 编辑本身就撞过 old_string 对不上的坑）。
-# ---------------------------------------------------------------------------
-
-def extract_task_text(plan_text: str, task_id: int) -> Optional[str]:
-    """按 `### Task N:` 分段抠出单张 ticket 的完整原文（含标题行，止于下一个 Task 标题或 EOF）。
-
-    围栏词法（单一源 ship_gate.FenceTracker）只用于**标题识别**的豁免——fenced 示例里的
-    `### Task N:` 字样不触发切段；一旦确认身处目标 Task 段内，段内所有行（含 fenced 内容，
-    如出票规则允许内联的 prototype 决策性片段）原样收录、不做二次过滤——这是 ticket 的真实
-    正文，不是需要滤掉的噪音（同 matt task-brief 脚本行为：fence 只挡标题误判，不挡正文收录；
-    与 parse_blocked_by 整段跳过 fenced 行的口径**有意不同**，二者用途不同不可混用）。
-
-    返回 None 表示 plan 里没有该编号的 Task 段。
-    """
-    if _FenceTracker is None:
-        raise TopoError(
-            "无法加载围栏词法单一源 ship_gate.FenceTracker，拒绝以分叉口径解析 plan"
-            + (f"（import 失败原因：{_FENCE_IMPORT_ERR}）" if _FENCE_IMPORT_ERR else "")
-        )
-    # 扫描**全文到 EOF**（不因目标段已收完就提前退出）——与 parse_blocked_by 同一份
-    # fail-closed 纪律对齐：目标段之后的悬空围栏一样代表"这份 plan 解析不可靠"，
-    # 早退会让扫描停在悬空围栏产生之前、看不见它，把一个真实的解析风险静默放过。
-    fence = _FenceTracker()
-    cur_tid: Optional[int] = None
-    out_lines: List[str] = []
-    seen = False
-    collecting = False
-    for line in plan_text.splitlines():
-        gated = fence.feed(line) or fence.inside
-        if not gated:
-            m = TASK_HEADER_RE.match(line)
-            if m:
-                new_tid = int(m.group(1))
-                if collecting and new_tid != task_id:
-                    collecting = False  # 目标段已收完，只停止收录，扫描仍继续到 EOF
-                cur_tid = new_tid
-                if cur_tid == task_id:
-                    seen = True
-                    collecting = True
-        if collecting and cur_tid == task_id:
-            out_lines.append(line)
-
-    if fence.inside:
-        raise TopoError("plan 存在未闭合的 fenced 代码块（```），解析不可靠")
-    if not seen:
-        return None
-    return "\n".join(out_lines) + "\n"
-
-
-# ---------------------------------------------------------------------------
 # plan-budget：出票预算计量（T249）
 # 预算票 = 全部票 − 合规迁移批次 − 唯一 R-ID: all 收尾票，预算票数 ≤ BUDGET_MAX。
 # 迁移批次豁免须机读声明 + 结构合规；「各批是否同一机械变换」无确定性信号，留给
@@ -308,12 +258,18 @@ def _task_marker_values(plan_text: str, marker_re: "re.Pattern[str]") -> Dict[in
     return values
 
 
-def plan_budget(plan_text: str) -> dict:
-    """统计预算票 / 迁移批次 / 收尾票并给出违规清单。拓扑非法 ⇒ raise TopoError。"""
+def plan_budget(plan_text: str, tasks_text: Optional[str] = None) -> dict:
+    """统计预算票 / 迁移批次 / 收尾票并给出违规清单。拓扑非法 ⇒ raise TopoError。
+
+    收尾票契约（唯一「实现验证」票 · 验收提聚合套件 · Blocked-by ⊇ 全部功能票）复用 gate 的
+    `plan_closing_ticket_check` 同一判据——出票当场报，不等提交后 gate 判 UNKNOWN 才暴露。
+    `tasks_text` 给出时再校验 R-ID 覆盖（R-ID 定义源 = tasks.md 编号条目，见 `_r_id_violations`）；
+    缺省（None）时跳过该项并在结果里标 `r_id_checked: false`，CLI 侧负责把「找不到 tasks.md」报成违规。"""
     deps = parse_blocked_by(plan_text)   # 同时完成 fence 未闭合、缺 Blocked-by 等结构校验
     # R-ID 解析单一源 = ship_gate（第四道校验认收尾票的同一口径）；惰性 import，
     # 模块顶层已把 gate 目录放进 sys.path（见 FenceTracker 导入处）。
-    from ship_gate import _plan_task_r_ids, CLOSING_TICKET_R_ID  # type: ignore
+    from ship_gate import (_plan_task_r_ids, CLOSING_TICKET_R_ID,  # type: ignore
+                           plan_closing_ticket_check)
 
     r_ids = _plan_task_r_ids(plan_text)
     closing = sorted(int(t) for t, v in r_ids.items()
@@ -321,6 +277,10 @@ def plan_budget(plan_text: str) -> dict:
     violations: List[str] = []
     if len(closing) > 1:
         violations.append(f"多张 R-ID: all 票 {closing}，收尾票须唯一，仅豁免一张")
+    else:
+        ok, note = plan_closing_ticket_check(_PlanText(plan_text))
+        if not ok:
+            violations.append(f"收尾票不合 gate 契约：{note}")
     closing_ids = set(closing[:1])
 
     migration_of = _task_marker_values(plan_text, MIGRATION_OF_RE)
@@ -366,13 +326,74 @@ def plan_budget(plan_text: str) -> dict:
         violations.append(
             f"预算票 {len(budgeted)} 张，超出上限 {BUDGET_MAX}：{budgeted}"
             "（迁移批次须以 Migration-of/Transform 机读声明并结构合规才豁免）")
+    if tasks_text is not None:
+        violations.extend(_r_id_violations(deps, closing_ids, r_ids, tasks_text))
     return {
         "budget_max": BUDGET_MAX,
         "budgeted": budgeted,
         "migration_batches": sorted(batches),
         "closing": sorted(closing_ids),
+        "r_id_checked": tasks_text is not None,
         "violations": violations,
     }
+
+
+# R-ID 定义源 = tasks.md 的编号追踪条目（schema tasks 指令规定的 `- [ ] X.Y 描述` 格式）。
+# 票的 `R-ID:` 写它实现的条目编号（逗号分隔，如 `1.1, 1.2`）；收尾票写 `all`。
+# 需求 → 票的追溯由此机械可验：每个条目至少一张票认领，每个 R-ID 都指向真实条目。
+TASKS_ITEM_RE = re.compile(r"^\s*-\s*\[[^\]]*\]\s+(\d+(?:\.\d+)+)(?=\s|$)")
+_R_ID_SPLIT_RE = re.compile(r"[,，、;；\s]+")
+
+
+def tasks_item_ids(tasks_text: str) -> List[str]:
+    """tasks.md 中带编号的追踪条目号（出现序，fence-aware：围栏内的示例条目不算）。"""
+    fence = _FenceTracker()
+    ids: List[str] = []
+    for line in tasks_text.splitlines():
+        if fence.feed(line) or fence.inside:
+            continue
+        m = TASKS_ITEM_RE.match(line)
+        if m:
+            ids.append(m.group(1))
+    return ids
+
+
+def _r_id_violations(deps: Dict[int, Set[int]], closing_ids: Set[int],
+                     r_ids: Dict[str, str], tasks_text: str) -> List[str]:
+    items = tasks_item_ids(tasks_text)
+    if not items:
+        return ["tasks.md 未见编号追踪条目（`- [ ] 1.1 描述`），R-ID 没有可引用的定义源"]
+    known = set(items)
+    covered: Set[str] = set()
+    violations: List[str] = []
+    for tid in sorted(deps):
+        if tid in closing_ids:
+            continue
+        raw = (r_ids.get(str(tid)) or "").strip()
+        if not raw:
+            violations.append(f"Task {tid} 缺 R-ID（填它实现的 tasks.md 条目编号，如 1.1）")
+            continue
+        tokens = [t for t in _R_ID_SPLIT_RE.split(raw) if t]
+        unknown = [t for t in tokens if t not in known]
+        if unknown:
+            violations.append(
+                f"Task {tid} 的 R-ID 引用了 tasks.md 不存在的条目：{', '.join(unknown)}")
+        covered.update(t for t in tokens if t in known)
+    missing = [i for i in items if i not in covered]
+    if missing:
+        violations.append(f"tasks.md 条目未被任何票的 R-ID 认领：{', '.join(missing)}")
+    return violations
+
+
+class _PlanText:
+    """`ship_gate.plan_closing_ticket_check` 读 `plan.read_text(...)`；plan-budget 手里只有文本——
+    最小适配，复用 gate 同一份收尾票判据，不落临时文件、不手抄第二份。"""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def read_text(self, *args, **kwargs) -> str:
+        return self._text
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +724,37 @@ def _validate_domains(domains_raw) -> Tuple[Dict[str, dict], str]:
     return validated, default_name  # type: ignore[return-value]
 
 
+def _reject_bare_dir_paths(root: Path, head: str, worktree_mode: bool,
+                           domains: Dict[str, dict]) -> None:
+    """不以 `/` 结尾的域路径按「精确路径相等」匹配（`_match_domain`）；它若其实是目录，目录下的
+    文件一个都匹配不上、全部静默落进默认域——默认域无测试层时就是零测试放行。故对每条无尾斜杠
+    路径按 head 快照判型（工作树模式另看磁盘，覆盖尚未提交的新目录）：是目录 ⇒ fail-loud。"""
+    bare = [(name, p) for name, spec in domains.items() for p in spec["paths"]
+            if p and not p.endswith("/")]
+    if not bare:
+        return
+    query = "".join(f"{head}:{p}\n" for _, p in bare)
+    r = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check"],
+                       input=query, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        raise SuiteScopeError(
+            "git cat-file --batch-check 失败",
+            r.stderr.strip() or "退出码非零",
+            "确认仓库未损坏、head 合法")
+    for (name, p), line in zip(bare, r.stdout.splitlines()):
+        parts = line.split()
+        is_tree = not line.endswith(" missing") and len(parts) >= 2 and parts[1] == "tree"
+        if not is_tree and worktree_mode:
+            is_tree = (root / p).is_dir()
+        if is_tree:
+            raise SuiteScopeError(
+                "域路径是目录却未以 / 结尾",
+                f"域 {name!r} 的路径 {p!r} 在 {head[:12]} 是目录；不以 / 结尾只做精确路径相等匹配，"
+                "该目录下的文件会全部落入默认域（默认域无测试层时等于零测试放行）",
+                f"改写为 {p + '/'!r}（目录前缀匹配）")
+
+
 def _match_domain(path: str, domains: Dict[str, dict], default_name: str
                    ) -> Tuple[str, Optional[str]]:
     """在全部域（含默认域）的 paths 中取最长匹配前缀；无匹配 ⇒ 默认域。以 `/` 结尾 = 目录
@@ -809,6 +861,7 @@ def suite_scope(root: Path, base_arg: Optional[str], head_arg: Optional[str], ch
                     f"test-suites.domains 存在的同时，顶层键 {conflict} 仍残留",
                     "把这些层移入默认域的 layers（迁移期残留 MUST 清理，不静默忽略）")
             domains, default_name = _validate_domains(domains_raw)
+            _reject_bare_dir_paths(root, head, not head_arg, domains)
             hit_domains, mapping = _classify_changed(changed, domains, default_name)
             layers, skipped_layers = _aggregate_layers(domains, hit_domains)
         else:
@@ -905,36 +958,23 @@ def _cmd_frontier(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return EXIT_ROUTE_STOP
 
+    # g-implement 停点约定：票失败时在该票段内写 `BLOCKED: <原因>`；人处理后删除该行才恢复派发。
+    # 解析单一源 = ship_gate.plan_blocked_tickets（gate 在 CONTINUE_IMPL 前用同一份判阻塞）。
+    from ship_gate import plan_blocked_tickets  # type: ignore
+    blocked = {int(t): why for t, why in plan_blocked_tickets(text).items()
+               if int(t) in deps and int(t) not in done}
+    ready = [t for t in ready if t not in blocked]
+    listing = "；".join(f"Task {t}（BLOCKED: {why}）" for t, why in sorted(blocked.items()))
+    if not ready and blocked:
+        print("problem: 无可派发票：剩余票被 BLOCKED 停点挡住", file=sys.stderr)
+        print(f"cause: {listing}", file=sys.stderr)
+        print("fix: 停止本轮并原样上报；人处理阻塞原因后删除 tickets.md 中对应的 `BLOCKED:` 行再重跑",
+              file=sys.stderr)
+        return EXIT_FRONTIER_BLOCKED
+    if blocked:
+        print(f"note: 已排除 BLOCKED 票：{listing}", file=sys.stderr)
+
     print(" ".join(str(x) for x in ready))
-    return 0
-
-
-def _cmd_task_text(args: argparse.Namespace) -> int:
-    plan_path = Path(args.plan)
-    if not plan_path.exists():
-        print(f"plan 文件不存在: {plan_path}", file=sys.stderr)
-        return EXIT_ROUTE_STOP
-
-    text = plan_path.read_text(encoding="utf-8", errors="replace")
-    try:
-        extracted = extract_task_text(text, args.task)
-    except TopoError as e:
-        print(str(e), file=sys.stderr)
-        return EXIT_ROUTE_STOP
-
-    if extracted is None:
-        print(f"Task {args.task} 在 {plan_path} 中不存在", file=sys.stderr)
-        return EXIT_ROUTE_STOP
-
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        # 默认落 {change_dir}/impl-reports/task<N>-brief.md——沿用 T125 既有的
-        # report/review-package 文件命名惯例（plan_path.parent 即 change_dir）。
-        out_path = plan_path.parent / "impl-reports" / f"task{args.task}-brief.md"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(extracted, encoding="utf-8")
-    print(f"wrote {out_path}: {len(extracted.splitlines())} lines")
     return 0
 
 
@@ -945,11 +985,17 @@ def _cmd_plan_budget(args: argparse.Namespace) -> int:
         print(f"plan 文件不存在: {plan_path}", file=sys.stderr)
         return EXIT_ROUTE_STOP
     text = plan_path.read_text(encoding="utf-8", errors="replace")
+    tasks_path = Path(args.tasks) if args.tasks else plan_path.parent / "tasks.md"
+    tasks_text = (tasks_path.read_text(encoding="utf-8", errors="replace")
+                  if tasks_path.is_file() else None)
     try:
-        result = plan_budget(text)
+        result = plan_budget(text, tasks_text)
     except TopoError as e:
         print(str(e), file=sys.stderr)
         return EXIT_ROUTE_STOP
+    if tasks_text is None:
+        result["violations"].append(
+            f"找不到 tasks.md（{tasks_path}），R-ID 覆盖无法校验——R-ID 的定义源是 tasks.md 的条目编号")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     for v in result["violations"]:
         print(v, file=sys.stderr)
@@ -961,20 +1007,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="g-implement tickets 调度 stdlib helper（只读，不改 ship_gate.py）")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    frontier_p = sub.add_parser("frontier", help="按 Blocked-by 拓扑算 next-ready ticket 号")
+    frontier_p = sub.add_parser(
+        "frontier", help="按 Blocked-by 拓扑算 next-ready ticket 号（排除 BLOCKED 票；全被挡住退出 4）")
     frontier_p.add_argument("--plan", required=True, help="plan 文件路径")
     frontier_p.add_argument("--done", required=True, help="逗号分隔已完成号列，或 none")
 
-    task_text_p = sub.add_parser(
-        "task-text", help="机械抠出单张 Task 段原文落盘，供 dispatch prompt 引用路径而非手抄")
-    task_text_p.add_argument("--plan", required=True, help="plan 文件路径")
-    task_text_p.add_argument("--task", required=True, type=int, help="Task 号")
-    task_text_p.add_argument(
-        "--out", help="输出路径（默认 <change_dir>/impl-reports/task<N>-brief.md）")
-
     plan_budget_p = sub.add_parser(
-        "plan-budget", help="统计出票预算（预算票/迁移批次/收尾票），超限或豁免不合规即退出 1")
+        "plan-budget",
+        help="统计出票预算（预算票/迁移批次/收尾票）并校验收尾票契约与 R-ID 覆盖，违规即退出 1")
     plan_budget_p.add_argument("--plan", required=True, help="plan 文件路径")
+    plan_budget_p.add_argument(
+        "--tasks", help="tasks.md 路径（R-ID 定义源；缺省取 plan 同目录的 tasks.md）")
 
     suite_scope_p = sub.add_parser(
         "suite-scope", help="按 diff 路径归域求值收尾票测试层集合（adr/0045）")
@@ -995,8 +1038,6 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "frontier":
         return _cmd_frontier(args)
-    if args.cmd == "task-text":
-        return _cmd_task_text(args)
     if args.cmd == "suite-scope":
         return _cmd_suite_scope(args)
     if args.cmd == "plan-budget":

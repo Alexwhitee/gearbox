@@ -26,7 +26,7 @@ priority: null                # bug only：约定 P1|P2|P3（脚本不做词表�
 type: null                    # todo only：自由文本类型（无受控词表）
 date: "2026-08-03"            # 创建日期
 source_change: some-change    # 发现该 issue 的 change（provenance，可 null，不可变）
-module: g-ship           # 涉及模块
+module: g-done           # 涉及模块
 summary: "一行摘要"
 resolved_by: null             # 修复该 issue 的 change（关闭时自动填）
 closed_date: null             # 关闭日期（关闭时自动填）

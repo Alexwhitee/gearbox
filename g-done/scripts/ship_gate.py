@@ -359,6 +359,26 @@ def archived_dirs_in_tree(root, ref, change):
             if pat.fullmatch(line.rsplit("/", 1)[-1])}
 
 
+def uncommitted_archive_dirs(root, change):
+    """〔A2〕工作树里有、HEAD 树里没有的 `archive/<日期>-{change}`（= 已 `openspec archive`、尚未提交）。
+
+    `openspec archive` 只在文件系统里搬目录、不提交：此刻 active 目录已从工作树消失，HEAD 树里
+    又还没有归档目录——纯 git 域视角下 change「不存在」，若不识别这一窗口，「每步前后跑 gate」
+    会把正常收尾流程停在 archive 与 commit 之间。只认本 change 在 HEAD 树里仍是 active 的情形
+    （归档前已提交过），未跟踪的同名垃圾目录不会被当成本窗口。
+    """
+    adir = root / "openspec" / "changes" / "archive"
+    if not adir.is_dir():
+        return []
+    rc, _ = run_git_rc(root, "cat-file", "-e", f"HEAD:openspec/changes/{change}")
+    if rc != 0:
+        return []
+    pat = re.compile(r"\d{4}-\d\d-\d\d-" + re.escape(change) + r"$")
+    committed = archived_dirs_in_tree(root, "HEAD", change)
+    return sorted(d.name for d in adir.iterdir()
+                  if d.is_dir() and pat.fullmatch(d.name) and d.name not in committed)
+
+
 def archived_verify_state(root, ref, archive_dir):
     # [spec-review-amendment H1/BR-2] SHIPPED 前追读归档目录内 verify-report.md 的 verify 锚
     # （从 ref 树）——不把「归档⟹已验」当无条件蕴含（手工空壳归档目录不得假 SHIPPED）。
@@ -752,10 +772,47 @@ def is_stale(root, rel, scope, change):
     # 🔴 **MUST NOT 用负向 pathspec** `':!openspec'`：继承外部可控的 `GIT_ICASE_PATHSPECS`
     #   （已实测证伪）。排除在 Python 侧按条目名做（`p != b"openspec"`），git pathspec 语义不参与。
     # rc≠0 由 `ls_tree_map` 抛 `GateIndeterminate`（→ UNKNOWN(6)），读失败不折成空集假等值。
-    head_top = ls_tree_map(root, "HEAD", recursive=False)
-    head_code = {p: v for p, v in head_top.items() if p != b"openspec"}
-    _head_mb, head_digest = fingerprint_entries(head_code)
+    head_digest = code_digest_at(root, "HEAD")
     return (head_digest != sha), ("stale" if head_digest != sha else "fresh")
+
+
+def code_digest_at(root, ref):
+    """`ref` 上 code 域（仓库顶层条目、排除 openspec）的内容指纹 digest——`is_stale` code 分支与
+    归档态交付核对（B2）共用，单一源。"""
+    top = ls_tree_map(root, ref, recursive=False)
+    return fingerprint_entries({p: v for p, v in top.items() if p != b"openspec"})[1]
+
+
+def _content_anchor_from_text(text):
+    """报告文本 → 互证通过的 64 位内容锚 sha；缺锚 / 旧 40-hex / 不互证 / 坏 frontmatter → None。
+    （归档读点专用：归档文本来自 `git show`，不经 live 读点的 `_read_anchor`。）"""
+    state, err = parse_ship_gate_frontmatter(text)
+    if err is not None:
+        return None
+    sha, manifest = state.get("reviewed_sha"), state.get("reviewed_manifest")
+    if not (isinstance(sha, str) and len(sha) == 64 and isinstance(manifest, str)):
+        return None
+    try:
+        mb = base64.b64decode(manifest, validate=True)
+    except Exception:
+        return None
+    return sha if hashlib.sha256(mb).hexdigest() == sha else None
+
+
+def archived_code_mismatch(root, verify_text, ref):
+    """〔B2〕归档 verify 报告锚定的「已验证代码」vs `ref` 上的代码域指纹：一致 → None；否则 → 原因。
+
+    归档态不再有 active 报告可求失鲜：归档提交若夹带了已暂存的源码、或归档后工作分支又提交了
+    代码，没有这道核对就会被当作已验证内容判 SHIPPED / 合入目标分支。"""
+    sha = _content_anchor_from_text(verify_text)
+    if sha is None:
+        return ("归档 verify-report 缺有效的 64 位内容锚（reviewed_sha/reviewed_manifest），"
+                "无法确认待交付代码就是已验证代码；旧格式归档请人工核对后手动处理")
+    if code_digest_at(root, ref) != sha:
+        return (f"{ref[:7] if len(ref) == 40 else ref} 上 openspec/ 外的代码与 verify 锚定的已验证代码不一致"
+                "（归档提交夹带了未验证源码，或归档后又提交了代码）→ MUST NOT 判完成/合并；"
+                "撤出这些改动，或回到 active 状态重新 verify")
+    return None
 
 
 
@@ -982,30 +1039,79 @@ def _coerce_ship_gate_value(field, val):
     return val                               # verify/code_review/reviewed_sha：交枚举/正则校验
 
 
-# [T26/SR-1；mlh-p5 Task6 D11] 熔断状态集合判据：判据 = 该步 ship-gate **frontmatter 状态集合**
-# 是否变化（非 HEAD/mtime、非 inline 锚行）。两个纯函数/无状态 helper：不落地文件、无副作用，
-# 供上层熔断逻辑（人工/skill 层，非本文件）对比"上一次快照"与"本次重跑"的状态集，判有无实质进展。
-def anchor_set(text):
-    """返回该报告 frontmatter 的 ship-gate 状态集合（frozenset of (field, value) 对）。
-    [mlh-p5 Task6 D11] 迁 frontmatter：复用 parse_ship_gate_frontmatter 提取状态 dict（与 live
-    读点单核一致，防漂移），键值对集合作快照；坏 frontmatter → 空集（保守，无净变化倾向判无进展）。
-    inline 锚已随 live 读点退役，不再参与熔断进展判据（正文残留 inline 锚被忽略）。"""
-    state, err = parse_ship_gate_frontmatter(text)
-    if err is not None:
-        return frozenset()
-    return frozenset(state.items())
+# [T26/SR-1] 熔断判据（anchor_set / breaker_no_progress 纯函数）已删除：生产路径从未接入
+# （只有测试引用），熔断实际由执行者比对**连续两次 gate 输出**（verdict + 相关报告
+# frontmatter 状态）判定，见 g-done SKILL「铁律 2」。留着死代码只会让人误以为有机械熔断。
 
 
-def breaker_no_progress(before, after):
-    """熔断纯函数：before/after 为两次 anchor_set() 快照（frozenset）。集合无净变化
-    （before == after）→ True=无进展，判熔断。fail-safe：**任一快照缺失**（before 或
-    after is None，如 context 压缩丢记录、或重跑后报告不存在/不可读）→ 保守返 True（宁可
-    误判无进展停上抛，不放行假免疫）〔impl-review-fix CR-2：原只护 before，after=None 时对
-    非空 before 返 False=假放行，正是要防的漏网〕。HEAD 移动/mtime 变化 MUST NOT 作为免疫
-    信号——本函数不接收、不比较它们。"""
-    if before is None or after is None:
-        return True
-    return before == after
+# ── 决策纪要门（B6）：送设计审之前，本 change 必须有 g-spec 相位 B 定稿的 decision-memo.md ──
+# 此前该门只存在于 gearbox 自身的 pytest（扫本仓 openspec/），消费仓绕过 g-spec 建的 change
+# 一路无人拦——文档却宣称「机械门」。判据与 g-spec C.1 前三判同口径：文件存在、两个必填
+# 小节非空、frontmatter `decision_hash` 非空（= 相位 B 收敛两步已走完）。hash 重算（防定稿后
+# 手改）仍由 g-spec C.1 负责：那是生成前的身份核验，gate 这里只守「纪要真实存在且已定稿」。
+MEMO_FILENAME = "decision-memo.md"
+MEMO_REQUIRED_SECTIONS = ("## 拍板决策", "## 承重约束")
+_ATX_RE = re.compile(r"^ {0,3}(#{1,6})(?:\s|$)")
+
+
+def _atx_level(line):
+    m = _ATX_RE.match(line)
+    return len(m.group(1)) if m else None
+
+
+def _memo_section_body(text, heading):
+    """`heading` 行到下一个同级或更高级 ATX 标题之间的正文；不存在 → None。
+    fenced code block / HTML 注释块内的行不参与标题判定（复用本文件两个追踪器，单一源）。"""
+    level = _atx_level(heading)
+    lines = text.splitlines()
+    fence, comment = FenceTracker(), HtmlCommentTracker()
+    visible = []
+    for line in lines:
+        is_fence_line = fence.feed(line)
+        in_comment = comment.feed(line)
+        visible.append(not is_fence_line and not fence.inside and not in_comment)
+    start = next((i for i, l in enumerate(lines)
+                  if visible[i] and _atx_level(l) == level and l.strip() == heading), None)
+    if start is None:
+        return None
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        lv = _atx_level(lines[i])
+        if visible[i] and lv is not None and lv <= level:
+            end = i
+            break
+    return "\n".join(lines[start + 1:end])
+
+
+def decision_memo_problems(change_dir):
+    """→ [] 表示纪要过门；否则返回缺口列表（每条可直接照做）。"""
+    memo = Path(change_dir) / MEMO_FILENAME
+    if not memo.is_file():
+        return [f"{MEMO_FILENAME} 不存在（相位 B 未产出决策纪要）"]
+    text = _read_report_text(memo, "决策纪要")
+    if text.startswith("﻿"):
+        text = text[1:]
+    problems = []
+    for heading in MEMO_REQUIRED_SECTIONS:
+        body = _memo_section_body(text, heading)
+        if body is None:
+            problems.append(f"{MEMO_FILENAME} 缺必填小节「{heading}」")
+        elif not re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip():
+            problems.append(f"{MEMO_FILENAME} 必填小节「{heading}」为空")
+    lines = text.splitlines()
+    closed = bool(lines) and lines[0].strip() == "---" and any(l.strip() == "---" for l in lines[1:])
+    front = {}
+    if closed:
+        try:
+            front = _yq(".", text=text, front_matter=True, default={})
+        except RuntimeError:
+            problems.append(f"{MEMO_FILENAME} 的 frontmatter 不可解析")
+            front = None
+    if front is not None:
+        value = front.get("decision_hash") if isinstance(front, dict) else None
+        if not (isinstance(value, str) and value.strip()):
+            problems.append(f"{MEMO_FILENAME} 的 frontmatter 缺 decision_hash（纪要未定稿：相位 B 收敛两步未走完）")
+    return problems
 
 
 def emit(verdict, exit_code, next_step, reason, **extra):
@@ -1031,21 +1137,19 @@ def emit(verdict, exit_code, next_step, reason, **extra):
 #
 # 窗口 = `RUN_PLAN` / `CONTINUE_IMPL` 两个「进入实现期」的判定。窗口右边界是
 # 「代码审报告出现」而非「最后一个任务打勾」——代码审过程中本来就会改代码与文档。
-def guard_design_freshness(root, change, report):
-    """窗口内求值 design 域失鲜；stale ⇒ `REFUSE_START` 并**带出锚值**〔ADR-4〕。
+def design_drift(root, change, report):
+    """design 锚之后监视集（proposal/design/specs）的内容变化 → `(stale, paths, detail)`。
 
-    fresh 或不失鲜 ⇒ 原样返回，由调用方继续 emit 它自己的判定。
+    判定走 `is_stale`（单一源）；只有失鲜时才对锚 manifest 与 HEAD 侧求差集点名路径
+    （DT-2：锚是内容摘要、不是 git ref，MUST NOT 拼 `git diff <sha>`）。
+    fresh ⇒ `(False, [], "")`。供窗口内闸门（`guard_design_freshness`）与实现后的非阻塞
+    `design_drift` 提示（B1）共用，防两处口径漂移。
     """
     rel = str(report.relative_to(root))
     design_stale, _freshness = is_stale(root, rel, "design", change)
     if not design_stale:
-        return
-    # [ADR-4] 锚值 MUST 可见：撞门者不必先去翻报告 frontmatter 抄 sha。
-    # 〔sweep-pool-debt D3/D4〕锚已改为内容 manifest digest，**不再是 git ref**——
-    # MUST NOT 拼 `git diff <sha> HEAD` 这类假定锚可解析为 commit 的命令（sha 现在
-    # 解析不到任何 git 对象）。诊断改为**走 manifest**（DT-2）：对锚 manifest 与 HEAD
-    # 侧重新枚举求差集，逐路径点名 + `git log -1 -- <路径>` 点名最近改动提交。
-    sha, anchor_manifest = _read_anchor(root, rel)
+        return False, [], ""
+    _sha, anchor_manifest = _read_anchor(root, rel)
     base = change_base(change)
     specs = design_pathspecs(base)
     head_entries = ls_tree_map(root, "HEAD", specs)
@@ -1053,18 +1157,31 @@ def guard_design_freshness(root, change, report):
     diff_paths = sorted(
         p for p in set(anchor_entries) | set(head_entries)
         if anchor_entries.get(p) != head_entries.get(p))
+    paths = [os.fsdecode(p) for p in diff_paths]
     points = []
-    for p in diff_paths:
-        path_str = os.fsdecode(p)
+    for path_str in paths:
         commit = run_git(root, "log", "-1", "--format=%H", "--", path_str)
         points.append(f"{path_str}（最近改动提交 {commit[:7] if commit else '未知'}）")
     detail = "；".join(points) if points else f"（差异路径不可枚举，监视集：{shlex.join(specs)}）"
+    return True, paths, detail
+
+
+def guard_design_freshness(root, change, report):
+    """窗口内求值 design 域失鲜；stale ⇒ `REFUSE_START` 并**带出锚值**〔ADR-4〕。
+
+    fresh 或不失鲜 ⇒ 原样返回，由调用方继续 emit 它自己的判定。
+    """
+    stale, _paths, detail = design_drift(root, change, report)
+    if not stale:
+        return
+    # [ADR-4] 锚值 MUST 可见：撞门者不必先去翻报告 frontmatter 抄 sha。
+    sha = read_reviewed_sha(root, str(report.relative_to(root)))
     # 默认处置**只**推荐重跑设计门——MUST NOT 在此提重锚脚本：它是显式越权口
     # （impl-review 尾流修订协议的组成步骤），写进常规失鲜的默认指引等于把受控协议的
     # 组成步骤变成撞门者的自赦通道（spec「重锚脚本 MUST NOT 出现在默认处置指引中」）。
     emit("REFUSE_START", EXIT_REFUSE, None,
          "design-approved 之后监视集内容已变 → 拍板失鲜，改设计须重审"
-         "（重跑 g-spec-review 后重新拍板补锚）。触发点：" + detail,
+         "（重跑 /g-review spec 后由人重新拍板补锚）。触发点：" + detail,
          reviewed_sha=sha)
 
 
@@ -1351,6 +1468,30 @@ def _parse_plan(text):
             if cur is not None:   # 前言段（首个 Task 前）的框不归任何 task，忽略
                 boxes_by_task[cur].append(cm.group(1) in ("x", "X"))
     return task_order, boxes_by_task, any_checkbox, fence.inside
+
+
+# g-implement 的停点约定：票失败时在 tickets.md 该票段内写一行 `BLOCKED: <原因>`。
+# gate（CONTINUE_IMPL 前）与 impl_route frontier 共用本解析，避免两份口径。
+BLOCKED_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?\**BLOCKED\**\s*[:：]\s*(.*?)\s*$")
+
+
+def plan_blocked_tickets(text):
+    """→ {票号: 原因}。fence-aware（与 _parse_plan 同口径）；首个 Task 前的 BLOCKED 行不归任何票。
+    删除该行 = 人已处理阻塞，票恢复可派发。"""
+    blocked = {}
+    cur = None
+    fence = FenceTracker()
+    for line in text.splitlines():
+        if fence.feed(line) or fence.inside:
+            continue
+        tm = TASK_TITLE_RE.match(line)
+        if tm:
+            cur = tm.group(1)
+            continue
+        bm = BLOCKED_LINE_RE.match(line)
+        if bm and cur is not None:
+            blocked[cur] = bm.group(1) or "（未写原因）"
+    return blocked
 
 
 def checkbox_done_ids(plan):
@@ -1668,32 +1809,72 @@ def decide(root, change):
     # 顺序关键：短路必须在设计门 pre-flight 与 freshness 之前——归档 commit 的 --name-only
     # 会列出 active 路径删除记录，若先跑 freshness 会引入新误报；短路后该路径天然不可达。
     if not cdir.exists():
+        # 〔A2〕archive 已发生、归档尚未提交：先于纯 git 域短路识别（否则判「change 不存在」）。
+        pending = uncommitted_archive_dirs(root, change)
+        if len(pending) > 1:
+            emit("UNKNOWN", EXIT_UNKNOWN, None,
+                 f"工作树里有多个未提交的归档目录（{'、'.join(pending)}），无法判定本次归档 → 人工清理多余目录")
+        if pending:
+            directory = root / "openspec/changes/archive" / pending[0]
+            rel_dir = directory.relative_to(root).as_posix()
+            try:
+                context = bc.read(root, directory)
+                if context and run_git(root, "symbolic-ref", "--quiet", "--short", "HEAD") != context["work_branch"]:
+                    raise ValueError("当前不在本 change 的 work_branch，禁止在错误分支提交归档")
+            except (ValueError, OSError) as exc:
+                emit("UNKNOWN", EXIT_UNKNOWN, None, f"分支约定无效：{exc}")
+            vpath = directory / "verify-report.md"
+            vtext = _read_report_text(vpath, "归档 verify 报告") if vpath.is_file() else ""
+            vstate, verr = parse_ship_gate_frontmatter(vtext)
+            if verr is not None or vstate.get("verify") != "PASS":
+                emit("UNKNOWN", EXIT_UNKNOWN, None,
+                     f"未提交的归档目录 {rel_dir} 缺有效 verify=PASS 锚，不能提交归档；"
+                     "核对是否在 verify PASS 之前就跑了 archive")
+            mismatch = archived_code_mismatch(root, vtext, "HEAD")
+            if mismatch:
+                emit("UNKNOWN", EXIT_UNKNOWN, None, mismatch)
+            emit("ARCHIVE_UNCOMMITTED", EXIT_OK, "g-done",
+                 f"已 openspec archive、归档尚未提交（{rel_dir}）→ 从 archive 第 3 步 delta 核验继续，"
+                 "通过后进入 commit", archive_dir=rel_dir)
         base = base_ref(root)
         head_dirs = archived_dirs_in_tree(root, "HEAD", change)   # H2 纯 git 域(工作树无关)
         base_dirs = archived_dirs_in_tree(root, base, change) if base else set()
         for archive_dir in sorted(head_dirs):
             directory = root / "openspec/changes/archive" / archive_dir
+            rel_dir = directory.relative_to(root).as_posix()
             try:
                 context = bc.read(root, directory, "HEAD")
             except (ValueError, OSError) as exc:
                 emit("UNKNOWN", EXIT_UNKNOWN, None, f"归档分支约定无效：{exc}")
             rc, _ = run_git_rc(root, "cat-file", "-e",
                                f"HEAD:openspec/changes/archive/{archive_dir}/.skip-merge")
+            # 〔B2〕归档提交 = 最早引入该归档目录的提交；其代码须恰为 verify 锚定的已验证代码。
+            first_archive_commit = (run_git(root, "log", "--format=%H", "--reverse", "HEAD", "--", rel_dir)
+                                    .splitlines() or [""])[0]
+            if context:
+                vtext = run_git_rc(root, "show", f"HEAD:{rel_dir}/verify-report.md")[1]
             if context and rc != 0:
                 if archived_verify_state(root, "HEAD", archive_dir) != "pass":
                     emit("UNKNOWN", EXIT_UNKNOWN, None, "归档缺有效 verify=PASS，不能结束或合并")
-                common = dict(archive_dir=directory.relative_to(root).as_posix(), **context)
+                common = dict(archive_dir=rel_dir, **context)
                 if context["merge_target"] is None:
+                    mismatch = archived_code_mismatch(root, vtext, first_archive_commit)
+                    if mismatch:
+                        emit("UNKNOWN", EXIT_UNKNOWN, None, mismatch)
                     emit("SHIPPED", EXIT_OK, None, "已提交归档；未请求合并，留在工作分支。未 push",
                          merge_not_requested=True, completed_in_place=context["work_branch"] == context["source_branch"], **common)
                 try:
                     target = bc.target_ref(root, context["merge_target"])
                 except ValueError as exc:
                     emit("UNKNOWN", EXIT_UNKNOWN, None, str(exc))
-                archive_commit = run_git(root, "log", "-1", "--format=%H", "HEAD", "--", directory.relative_to(root).as_posix())
+                archive_commit = run_git(root, "log", "-1", "--format=%H", "HEAD", "--", rel_dir)
                 merged, _ = run_git_rc(root, "merge-base", "--is-ancestor", archive_commit, target)
                 if merged == 0:
                     emit("SHIPPED", EXIT_OK, None, "归档已并入本 change 指定目标。未 push", **common)
+                # 待合并的是 work_branch 的 HEAD：其代码须仍是已验证代码（含归档后新增提交的情形）。
+                mismatch = archived_code_mismatch(root, vtext, "HEAD")
+                if mismatch:
+                    emit("UNKNOWN", EXIT_UNKNOWN, None, mismatch)
                 emit("RUN_VERIFY", EXIT_OK, "g-done", "已归档，继续合并到本 change 指定目标", **common)
             if rc != 0:
                 continue
@@ -1701,6 +1882,10 @@ def decide(root, change):
             if state != "pass":
                 emit("UNKNOWN", EXIT_UNKNOWN, None,
                      "跳过 merge 的归档缺少有效 verify=PASS 锚，不能判完成")
+            if context:
+                mismatch = archived_code_mismatch(root, vtext, first_archive_commit)
+                if mismatch:
+                    emit("UNKNOWN", EXIT_UNKNOWN, None, mismatch)
             emit("SHIPPED", EXIT_OK, None,
                  "归档完成 + verify=PASS；按已提交的 .skip-merge 跳过合并。未 push",
                  merge_skipped=True, archive_dir=f"openspec/changes/archive/{archive_dir}")
@@ -1738,6 +1923,13 @@ def decide(root, change):
     sr_state = live_ship_gate_state(report, "spec-review")   # 坏→UNKNOWN(6) 已 emit；absent→None
     design_ok = sr_state is not None and sr_state.get("design_approved") is True
     if not design_ok:
+        # 〔B6〕送设计审之前先要有 g-spec 相位 B 定稿的决策纪要——否则绕过 g-spec 建的 change
+        # 可以一路过设计门。next=g-spec 仅供展示：g-spec 需要人参与拷问，g-done 只停不代跑。
+        memo_problems = decision_memo_problems(cdir)
+        if memo_problems:
+            emit("REFUSE_START", EXIT_REFUSE, "g-spec",
+                 "缺合格的决策纪要，不能送设计审：" + "；".join(memo_problems)
+                 + " → 先跑 /g-spec 完成相位 B（拷问收敛并定稿纪要）")
         emit("REFUSE_START", EXIT_REFUSE, None,
              "未过设计门：spec-review-report.md 缺失或无 design_approved 锚；"
              "先完成设计门。若拍板已发生请人工补锚（显式越权留痕）——"
@@ -1747,9 +1939,9 @@ def decide(root, change):
              # （design_approved/reviewed_sha/reviewed_manifest）由脚本同批原子计算写入，
              # 撞门者按此文案操作不会再落入「手写完两个字段仍缺 reviewed_manifest」的二次踩坑。
              "跑 `anchor_writeback.py --change <name> --report spec-review-report.md "
-             "--domain design --set design_approved=true`（同一次写入落盘 design_approved + "
-             "reviewed_sha + reviewed_manifest 三字段，锚值由脚本计算，MUST NOT 手写）；"
-             "reviewed_sha 记的是被批准的盘面（拍板放行的那个提交），不是写报告的时刻"
+             "--domain design --set design_approved=true --expected-ref <送审提交>`（同一次写入落盘 "
+             "design_approved + reviewed_sha + reviewed_manifest 三字段，锚值由脚本计算，MUST NOT 手写；"
+             "送审提交 = 设计审报告记录的、人实际审阅的那个提交，之后设计若再改脚本会拒写）"
              + _unclosed_frontmatter_hint(report))
     # [harden-gate-git-layer Task4 · ADR-3 · tasks 2.5] **求值窗口**：design 域失鲜原本在此处
     # 无条件全阶段求值。现改为只在三个「进入实现期」的分支各自 emit 之前求值
@@ -1819,16 +2011,44 @@ def decide(root, change):
         if not sha:
             emit("UNKNOWN", EXIT_UNKNOWN, None,
                  (plan_note + "；" if plan_note else "") + "plan 未提交，完成标签窗口不可判；先提交出票产物")
+        # 〔A4〕g-implement 的停点 = 在票段内写 `BLOCKED: <原因>`。gate 与 frontier 此前都看不见它，
+        # 重调 /g-done 会把同一张被阻塞的票原样重派、「2 轮上限」从零计——停在这里交人。
+        blocked = {k: v for k, v in plan_blocked_tickets(
+            plan.read_text(encoding="utf-8", errors="replace")).items() if k in plan_ids - done}
+        if blocked:
+            guard_design_freshness(root, change, report)     # 与窗口内两入口同序：设计失鲜优先
+            listing = "；".join(f"Task {k}：{blocked[k]}" for k in sorted(blocked, key=int))
+            emit("IMPL_BLOCKED", EXIT_BLOCKED, None,
+                 f"实现被阻塞（{listing}）→ 停并交人：人处理阻塞原因后删除 tickets.md 中对应的 "
+                 "`BLOCKED:` 行并提交，再重调 /g-done；MUST NOT 自动重派被阻塞的票",
+                 blocked_tasks=sorted(blocked, key=int), done_tasks=sorted(done_in_plan, key=int))
         # [Task4 · tasks 2.6] 窗口入口②
         emit_windowed(root, change, report,
                       "CONTINUE_IMPL", EXIT_OK, "g-implement",
                       (plan_note + "；" if plan_note else "")
                       + f"实现进度 {len(done_in_plan)}/{n}（窗口 [{sha[:7] or '-'}, HEAD] 闭区间，集合归属）",
                       done_tasks=sorted(done_in_plan, key=int))
+    # ── 〔B1〕实现后的设计漂移：窗口外不阻塞，但 MUST 让人看见 ─────────────────
+    # 设计失鲜只在 RUN_PLAN / CONTINUE_IMPL 两个入口拦（代码审期/收尾期修订四件套是合法的，
+    # 见 emit_windowed 头注释）。代价是：实现完成后改 design/specs（甚至新增 Requirement）
+    # 会被静默带进 verify 与 archive。这里不改窗口，只在后段所有判定的 JSON 里带出
+    # `design_drift`（变化路径）并在 reason 追加提示，由 g-done SKILL 停下交人二选一。
+    # 设计锚不可读（旧格式等）时不追加提示——窗口内闸门已对它做过 fail-closed 判定。
+    try:
+        drift_stale, drift_paths, drift_detail = design_drift(root, change, report)
+    except GateIndeterminate:
+        drift_stale, drift_paths, drift_detail = False, [], ""
+    drift_extra = {"design_drift": drift_paths or [drift_detail]} if drift_stale else {}
+    drift_note = (f"（⚠ 设计门批准后 design/specs 有改动，见 design_drift：{drift_detail}；"
+                  "须交人重审或明确确认）") if drift_stale else ""
+
+    def late(verdict, exit_code, next_step, reason, **extra):
+        emit(verdict, exit_code, next_step, reason + drift_note, **drift_extra, **extra)
+
     # ── step 8：code-review 门 ─────────────────────────────────
     cr = cdir / "code-review-report.md"
     if not cr.is_file():
-        emit("RUN_CODE_REVIEW", EXIT_OK, "g-code-review",
+        late("RUN_CODE_REVIEW", EXIT_OK, "g-code-review",
              (plan_note + "；" if plan_note else "") + "实现完成，进入代码审")
     # [mlh-p5 Task6 D1] live 只读 frontmatter（inline 回退已退役）：code_review 优先
     # （pass→'pos'/blocked→'neg'）；坏→UNKNOWN(6) 已 emit；absent→None→STEP_IN_PROGRESS（无锚语义）。
@@ -1838,18 +2058,33 @@ def decide(root, change):
         cr_state = "pos" if cv == "pass" else "neg" if cv == "blocked" else None
     else:
         cr_state = None                          # absent → 无锚 → STEP_IN_PROGRESS
+    cr_rel = str(cr.relative_to(root))
     if cr_state == "neg":
-        emit("BLOCKED_UPSTREAM", EXIT_BLOCKED, None,
-             "code-review 判 blocked：先解 blocker（见报告），gate 不蒙头跑")
+        # 〔A4〕blocked 之后修复已提交（代码域相对 blocked 结论已失鲜）⇒ 重跑代码审，而不是
+        # 永远停在 BLOCKED_UPSTREAM（此前修完也解不开，next=null，自动链路卡死）。
+        # 报告缺锚（手写 blocked、未经写锚脚本）⇒ 无从判失鲜，维持 BLOCKED_UPSTREAM。
+        try:
+            blocked_stale, blocked_fresh = is_stale(root, cr_rel, "code", change)
+        except GateIndeterminate as exc:
+            if exc.category != CAUSE_ANCHOR_MISSING:
+                raise
+            blocked_stale, blocked_fresh = False, None
+        if blocked_stale:
+            late("RERUN_STALE", EXIT_OK, "g-code-review",
+                 "code-review 判 blocked 之后已有 openspec/ 外新提交（blocker 修复）→ 重跑代码审",
+                 freshness=blocked_fresh, reviewed_sha=read_reviewed_sha(root, cr_rel))
+        late("BLOCKED_UPSTREAM", EXIT_BLOCKED, None,
+             "code-review 判 blocked：按报告修复 P0/P1 并提交代码后重调 /g-done"
+             "（代码变化后 gate 判 RERUN_STALE 自动重跑代码审）；需人决策的 blocker 原样交人")
     if cr_state is None:
-        emit("STEP_IN_PROGRESS", EXIT_OK, "g-code-review",
+        late("STEP_IN_PROGRESS", EXIT_OK, "g-code-review",
              "code-review-report.md 在但无锚行 → 该步进行中，重跑"
              + _unclosed_frontmatter_hint(cr))
     # 结论有效后先对账 defer，再检查代码新鲜度。
     defer_problem = guard_defer_ledger(root, change, cr)
     if defer_problem:
-        emit("STEP_IN_PROGRESS", EXIT_OK, "g-code-review", defer_problem)
-    cr_stale, cr_fresh = is_stale(root, str(cr.relative_to(root)), "code", change)
+        late("STEP_IN_PROGRESS", EXIT_OK, "g-code-review", defer_problem)
+    cr_stale, cr_fresh = is_stale(root, cr_rel, "code", change)
     cr_stale_note = None
     if cr_stale:
         # 陈旧判定优先级须让位于「verify=FAIL 之后修代码重验」链路：verify 已判 FAIL
@@ -1865,8 +2100,8 @@ def decide(root, change):
             # 两域漏带。`is_stale` 内部已读过一次该报告的锚，这里复用同一 `read_reviewed_sha`
             # 再读一次取值（与 design 域 guard_design_freshness 同一模式，非新造路径），
             # 让撞门者不必先翻报告 frontmatter 抄 sha 就能核对具体差异。
-            cr_sha = read_reviewed_sha(root, str(cr.relative_to(root)))
-            emit("RERUN_STALE", EXIT_OK, "g-code-review",
+            cr_sha = read_reviewed_sha(root, cr_rel)
+            late("RERUN_STALE", EXIT_OK, "g-code-review",
                  "code-review 结论后存在 openspec/ 外提交 → 结论陈旧，重审", freshness=cr_fresh,
                  reviewed_sha=cr_sha)
         # verify 已 FAIL：本轮不在此处抢跳，但把 cr 陈旧状态记下，
@@ -1875,7 +2110,7 @@ def decide(root, change):
     # ── step 9：verify 终门 ────────────────────────────────────
     vf = cdir / "verify-report.md"
     if not vf.is_file():
-        emit("RUN_VERIFY", EXIT_OK, "g-done", "进入收尾（verify→hand-off→archive→merge）")
+        late("RUN_VERIFY", EXIT_OK, "g-done", "进入收尾（verify→hand-off→archive→merge）")
     # [mlh-p5 Task6 D1] live 只读 frontmatter（inline 回退已退役）：verify 优先（PASS→'pos'/
     # FAIL→'neg'）；坏→UNKNOWN(6) 已在 verify 早检 emit；absent→None→STEP_IN_PROGRESS（无锚语义）。
     vf_front = live_ship_gate_state(vf, "verify")
@@ -1890,30 +2125,34 @@ def decide(root, change):
     # 次序改为与上方 code-review 读点一致（先定结论、再求失鲜）。原 OV-2 关心的「未闭合结构
     # 提示不被 stale 分支吞掉」由下面 STEP_IN_PROGRESS 分支自带的 hint 承载，语义不丢。
     if v_state is None:
-        emit("STEP_IN_PROGRESS", EXIT_OK, "g-done",
+        late("STEP_IN_PROGRESS", EXIT_OK, "g-done",
              "verify-report.md 在但无锚行 → 该步进行中，重跑"
              + _unclosed_frontmatter_hint(vf))
     v_stale, v_fresh = is_stale(root, str(vf.relative_to(root)), "code", change)
     if v_stale:
         # [impl-review-fix F2] 同上：ADR-4 要求 verify 域 RERUN_STALE 同带 reviewed_sha。
         v_sha = read_reviewed_sha(root, str(vf.relative_to(root)))
-        emit("RERUN_STALE", EXIT_OK, "g-done",
+        late("RERUN_STALE", EXIT_OK, "g-done",
              "verify 结论后存在 openspec/ 外提交 → 结论陈旧（FAIL 修复后重验不卡死 / PASS 不背书新代码）",
              freshness=v_fresh, reviewed_sha=v_sha)
     if v_state == "neg":
-        reason = "verify FAIL：停并上抛缺口清单（报告内）"
+        # 〔A3〕FAIL 只在代码变化后自动失鲜重验；缺口只在 openspec/ 内（证据/报告/勾选）时代码指纹
+        # 不变，重调永远停在这里——reason MUST 给出这条恢复路径（经人确认后整份重做 verify）。
+        reason = ("verify FAIL：停并上抛缺口清单（报告内）。代码缺口 → 修复并提交代码后重调（自动判 "
+                  "RERUN_STALE 重验）；缺口只在 openspec/ 内（证据/报告/tasks 勾选）→ 经人确认补齐后"
+                  "按 g-done「verify」整节重跑：重新捕获 verified_ref、整份重写 verify-report.md 并重新写锚")
         extra = {}
         if cr_stale_note:
             reason += cr_stale_note
             extra["cr_freshness"] = "stale"
-        emit("VERIFY_FAIL", EXIT_VFAIL, None, reason, **extra)
+        late("VERIFY_FAIL", EXIT_VFAIL, None, reason, **extra)
     # ── final：active 存在 + verify PASS → 收尾未完（绝不 SHIPPED）─────
     # [spec-review-amendment H1/HRTG-1] active 目录仍在 = archive 尚未发生（真 archive 移走
     # active）→ 本态至多「待收尾」。真 SHIPPED（归档后）由 decide 开头的 D3 短路识别
     # （active 缺席 + base 树可达 + archived verify=PASS 锚）。旧逻辑凭 archive glob 存在性
     # 判 SHIPPED 会被旧/同名 archive 误触发（HRTG-1 假 SHIPPED），故 active 存在时不判 SHIPPED。
     handoff = (cdir / "hand-off.md").is_file()
-    emit("RUN_VERIFY", EXIT_OK, "g-done",
+    late("RUN_VERIFY", EXIT_OK, "g-done",
          f"verify PASS，收尾未完（hand-off={handoff}；archive+merge 由 g-done，"
          "归档后 SHIPPED 由 gate 短路识别）", freshness=v_fresh)
 
@@ -1944,7 +2183,7 @@ def _indeterminate_reason(exc):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="g-ship 盘面判官（只读）")
+    p = argparse.ArgumentParser(description="g-done 盘面判官（只读）")
     p.add_argument("--change")
     p.add_argument("--default-branch", action="store_true", help="只读输出统一解析的默认分支与完整 ref（JSON）")
     p.add_argument("--root", default=None)

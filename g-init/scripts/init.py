@@ -50,7 +50,6 @@ SNIPPETS = os.path.join(ASSETS, "snippets")
 PROJECT_SCHEMA = "g-spec-driven"
 BUILTIN_SCHEMA = "spec-driven"
 LEGACY_SCHEMA = "sdflow-spec-driven"
-VALID_CHANGE_MARKER_SCHEMAS = {BUILTIN_SCHEMA, PROJECT_SCHEMA, LEGACY_SCHEMA}
 MIN_SCHEMA_CLI = (1, 7, 0)
 
 MARK_DOC = ("<!-- opsx-init:start —— 由 g-init 维护，勿手改本区块 -->",
@@ -82,26 +81,19 @@ def _find_marker_line(text, token):
 CORE_DIRS = ["changes", "specs"]  # openspec 核心；buglists/todolists 由各自 recorder skill 首用时建
 
 # 全局 hooks：通用功能，全局安装一次（~/.claude/），跨所有项目生效，不随 per-project bundle 铺设。
-# 两个 hook：
 #   · ff0-branch-guard.py        PreToolUse / Bash        在保护分支上拦 `openspec new change`
-#   · subagent-permission-guard.py  PermissionRequest / *  无人值守的 gear 子代理要权限确认时直接拒绝
 # cmd 里的脚本路径写成 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`，与 ensure_global_hook 的落盘目录
 # （CLAUDE_CONFIG_DIR 优先，缺省 ~/.claude）一致；写死 `$HOME/.claude` 会让设置了
-# CLAUDE_CONFIG_DIR 的用户注册指向一个没有脚本的位置。存量 FF-0 注册不改写（幂等判据按 hook 名）。
+# CLAUDE_CONFIG_DIR 的用户注册指向一个没有脚本的位置。
+# 解释器 token 不写死：注册时由 `_hook_interpreter()` 探测真能运行的那个（Windows 上 `python3`
+# 常是商店占位程序，写死它 = hook 每次报错且守卫失效）；本工具的存量注册命令不同则幂等改写。
 HOOKS = [
     {
         "name": "ff0-branch-guard.py",
         "src": os.path.join(ASSETS, "hooks", "ff0-branch-guard.py"),
         "event": "PreToolUse",
         "matcher": "Bash",
-        "cmd": 'python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/ff0-branch-guard.py"',
-    },
-    {
-        "name": "subagent-permission-guard.py",
-        "src": os.path.join(ASSETS, "hooks", "subagent-permission-guard.py"),
-        "event": "PermissionRequest",
-        "matcher": "*",
-        "cmd": 'python3 "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/subagent-permission-guard.py"',
+        "script": '"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hooks/ff0-branch-guard.py"',
     },
 ]
 
@@ -109,7 +101,9 @@ HOOKS = [
 # ~/.claude/settings.json 会留孤儿注册 + ~/.claude/hooks/ 残留脚本 → 之后每次 Bash 触发失败
 # hook。retire_hooks() 在 init/update 每次跑时自愈：外科式摘 settings 注册 + 删脚本；
 # fresh 安装无残留则全 no-op。后续任何 hook 退役都往这里加名即可。
-RETIRED_HOOKS = ["change-review-stub.py"]
+# subagent-permission-guard.py：为已退役的子代理派发而设（流程不再派发 g-* 子代理），
+# 留着只会在每次权限请求起一个进程，并误拒名字以 g- 开头的第三方子代理。
+RETIRED_HOOKS = ["change-review-stub.py", "subagent-permission-guard.py"]
 
 # 退役部署文件名单（drop-review-html-viewer）：曾由 g-init 铺进消费仓 openspec/ 根、现已
 # 废弃的文件。停止铺设后它们会变孤儿（不在 tools/ 整删重拷范围内），须显式清理。**签名门控删除**：
@@ -191,10 +185,18 @@ def inject(path, start, end, content, header=""):
     # sync_principles.py 的 canonical render 保持字节一致。普通 MARK_IDX 等布局
     # 保持原有的紧邻格式，避免每次 update 都改写所有消费仓的无关空行。
     separator = "\n" if content.startswith("<!-- g:principles:start") else ""
-    block = f"{start}\n{separator}{content.rstrip()}\n{end}\n"
     if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
+        # 换行风格逐字节保留：newline="" 读写不做转换（文本模式在 Windows 上会把整份
+        # LF 文件改写成 CRLF，托管区块外的用户行也跟着变）。区块按文件现有风格写入，
+        # 混用时取多数；区块外内容按原 offset 切片拼回，一字节不动。
+        with open(path, encoding="utf-8", newline="") as f:
             text = f.read()
+        crlf = text.count("\r\n")
+        eol = "\r\n" if crlf and crlf * 2 >= text.count("\n") else "\n"
+    else:
+        text, eol = None, "\n"
+    block = f"{start}\n{separator}{content.rstrip()}\n{end}\n".replace("\n", eol)
+    if text is not None:
         s_loc = _find_marker_line(text, start_token)
         e_loc = _find_marker_line(text, end_token)
         if s_loc and e_loc and s_loc[0] <= e_loc[0]:
@@ -205,17 +207,17 @@ def inject(path, start, end, content, header=""):
             # 静默丢内容（code-review adv 镜实证 F1/F2）。已 defer todolist，非本轻量批 scope。
             pre = text[:s_loc[0]]
             post = text[e_loc[1]:]
-            new = pre + block.rstrip("\n") + "\n" + post.lstrip("\n")
+            new = pre + block.rstrip("\r\n") + eol + post.lstrip("\r\n")
             if not new.endswith("\n"):
-                new += "\n"
+                new += eol
             action = "更新托管区块"
         else:
-            new = text.rstrip("\n") + "\n\n" + block
+            new = text.rstrip("\r\n") + eol + eol + block
             action = "追加托管区块"
     else:
         new = (header.rstrip("\n") + "\n\n" if header else "") + block
         action = "新建并写入"
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(new)
     return action
 
@@ -348,7 +350,7 @@ def _validate_schema_authority(schema_src):
     except RuntimeError as exc:
         raise RuntimeError(
             "project-local schema 权威资产不可读取："
-            f"{schema_asset}"
+            f"{schema_asset}（{exc}）"
         ) from exc
     if not isinstance(templates, list):
         templates = []
@@ -452,7 +454,7 @@ def ensure_dirs(root):
 # 本文件此前手搓 ~175 行 YAML 解析（_strip_inline_comment / _find_top_level_block /
 # _second_level_keys / _parse_model_tiers_block 等）。语法层（缩进/冒号/引号/注释剥离/
 # 多文档判定）全部委托外部 yq 二进制（mikefarah/yq，同 git 的外部二进制先例）；Python 侧
-# 只做业务判断（fleet/tier 键集校验、越域键检测、畸形头检测）。零依赖不变量（MUST NOT
+# 只做业务判断（键集 / 类型校验）。零依赖不变量（MUST NOT
 # `import yaml`/PyYAML——本脚本被 symlink 进消费仓，消费仓多数无 PyYAML，import 会
 # ImportError 崩溃，与 fail-closed 相悖）因此收窄为「不 import 解析库」而非「不依赖外部
 # YAML 工具」，代价见 openspec/adr/0036。
@@ -469,17 +471,20 @@ _yq_bin = None  # 进程内缓存
 
 def _check_yq():
     """轻量探测 yq 可用性 + 身份（不触碰 `_yq()` 的进程内缓存 `_yq_bin`——两者是独立探测
-    路径），专供 `lint_config` 入口前调用（design.md §3）：`lint_config` 的公开契约是「返回
+    路径）。两个调用方：① `lint_config` 入口前（design.md §3）：`lint_config` 的公开契约是「返回
     reason 字符串列表」而非崩溃/退出，yq 缺失时需要一条能塞进 reasons 列表的人读提示，而不是
     任由 `_yq()` 首次调用时的 RuntimeError 未被捕获地穿透（`cmd_config_lint`/`main()` 均不
-    catch 异常）。`run()`（init/update）路径不需要这道门——那条路径下 `_yq()` 失败自然被既有
-    的 `except (..., RuntimeError): _die(...)` 统一兜底，与其它文件系统错误同一套处理。
+    catch 异常）。② `run()`（init/update）的依赖前置门：版本门通过而 yq 不可用时在动文件系统
+    之前 fail-closed，避免半成品与「权威资产不可读取」这类掩盖真因的报错。
     返回 (ok, reason)：ok=True 时 reason=None。"""
     yq = shutil.which("yq")
     if not yq:
         return False, f"yq 未安装。{_YQ_INSTALL_HINT}"
-    vr = subprocess.run([yq, "--version"], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace")
+    try:
+        vr = subprocess.run([yq, "--version"], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return False, f"yq 无法执行（{exc}）。{_YQ_INSTALL_HINT}"
     if "mikefarah" not in vr.stdout:
         return False, (
             "检测到的 yq 不是 mikefarah/yq（可能是 kislyuk/yq），请卸载后安装正确版本。"
@@ -701,8 +706,9 @@ def migrate_changes(root, schema=BUILTIN_SCHEMA):
             continue
         marker = os.path.join(path, ".openspec.yaml")
         if os.path.exists(marker):
-            if _marker_schema(marker) not in VALID_CHANGE_MARKER_SCHEMAS:
-                raise RuntimeError(f"在途 change 的 schema marker 非法或不匹配：{marker}")
+            # 已有 marker = 该 change 已钉在某个 schema 上（含消费仓自己的 project-local schema），
+            # 不迁移、不改写；只有解析不出非空 schema 值才算坏（_marker_schema 抛）。
+            _marker_schema(marker)
             continue
         _atomic_write(marker, f"schema: {schema}\n".encode("utf-8"), ".openspec.")
         count += 1
@@ -733,111 +739,19 @@ def _marker_schema(marker):
 # **一次性**读出整份文档的 dict——不再按键路径逐个调用（`.schema` / `.rules` / ...）：
 # yq 是整份文档解析，document 内任何一处语法错误（如越权测试语料里的漏冒号叶子）都会让
 # **同一份文件的任何查询表达式**同等失败，分别调用只会重复触发同一次失败，一次读出更简单
-# 也更快。顶层块（model-tiers / metrics）「先探测存在再校验」，块整段缺失一律条件化放行
+# 也更快。可选顶层块（metrics）「先探测存在再校验」，块整段缺失一律条件化放行
 # （mlh-p2 假阳教训，memory dogfood-blind-spot-source-config：g-init update 从不注入
 # 新顶层键，故 100% 存量消费仓 config 无这些块，缺块是正常态、不是违规）；绝不裸
 # `cfg["k"]["j"]` 式取键，坏了是 KeyError 裸 traceback，不是人可读 reason。
 #
-# 〔与旧版行级扫描器的诊断精度差异，见 impl-report〕整份文档语法错误（如 `model-tiers:` 块内
+# 〔与旧版行级扫描器的诊断精度差异，见 impl-report〕整份文档语法错误（如某个块内
 # 一处漏冒号）此前能被旧扫描器局部容错、精确点名哪一行；yq 是真解析器，会让**整份文件**判定
 # 解析失败，`lint_config` 只能报一条笼统的「解析失败」reason（含 yq 原始诊断）。这是 yq 委托
 # 的既定代价（spec-review F9/decision-memo），不是本次改动引入的新缺陷。
 
-TIER_ALLOWED_SUBKEYS = {"strong", "mid", "light"}
-TIER_FLEET_KEYS = {"claude", "codex"}          # add-codex-host-support ADR-8：按机队分键
-EFFORT_FLEET_KEYS = {"claude", "codex"}
-EFFORT_ALLOWED_VALUES = {
-    "claude": {"low", "medium", "high", "xhigh", "max"},
-    "codex": {"low", "medium", "high", "xhigh", "max", "ultra"},
-}
 RULES_REQUIRED_SUBKEYS = ("proposal", "specs", "design", "tasks")
-
-
-def _valid_model_id(v):
-    """model-tiers 值的合法字符集校验（与 resolve-models.sh::_valid_model_id 同一有界口径，
-    跨语言各自本地重实现——add-codex-host-support D5/D10：主体只准 [A-Za-z0-9._-]、首字符字母
-    数字、非空，可带单个尾部方括号后缀（括号内仅字母数字、非空，如 `claude-opus-4-6[1M]` 的
-    上下文窗口标记——完整 model id 的一部分，不得要求用户削值），拒绝换行/控制字符/shell
-    元字符，防 eval 注入面的值经消费仓 config 回灌到 resolve-models.sh 的输出（输出侧另有
-    printf %q 纵深防御，bracket 不会在 eval 时被当 glob 展开）。"""
-    if not v:
-        return False
-    if v.endswith("]") and "[" in v:
-        v, _, suffix = v[:-1].partition("[")   # 首个 [ 切分：残余括号会落进 suffix 被拒
-        if not suffix or not all(c.isalnum() and c.isascii() for c in suffix):
-            return False
-    if not v:
-        return False
-    if not (v[0].isalnum() and v[0].isascii()):
-        return False
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    return all(c in allowed for c in v)
-
-
-def _model_tiers_from_dict(raw):
-    """model-tiers 顶层块的业务校验（fleet 键集识别/越域键检测/畸形头检测），在 yq 已解析出
-    的 dict 上执行——语法层（缩进/冒号/引号/注释）全部由 yq 负责，本函数只做键集/值形态判断。
-    机队分键 `{claude,codex}.{strong,mid,light}` 与扁平旧格式 `{strong,mid,light}`（ADR-8）
-    两种写法。返回 (entries, bad_subkeys, bad_headers)，语义同旧版 `_parse_model_tiers_block`：
-      entries: {"claude.strong": "opus", "flat.mid": "sonnet", ...}（值转 str；yq 的 null
-                （空值叶子）映射为空串，保留旧版「空值即无效模型ID」的语义，_valid_model_id
-                对空串恒返回 False）
-      bad_subkeys: 越域键集合（顶层非法二级键 + 机队子块下的三级越域叶子键）
-      bad_headers: 机队头值非 dict（标量误用，如 `claude: rogue` 单独一行、无更深嵌套）
-
-    〔与旧版行级扫描器的差异，见 impl-report〕旧版还需处理「漏冒号叶子」「机队头带尾随内容
-    且带更深缩进子块」这两类——它们在真 YAML 语法下是**非法文档**（`mapping values are not
-    allowed in this context`），yq 对整份 config.yaml 直接判定解析失败，根本到不了本函数；
-    `lint_config` 在读取阶段已把它们收作「config.yaml 解析失败」，故本函数不再需要旧版那套
-    靠行扫描器容错、局部诊断的 fleet_ctx 状态机与逐层 reset 规则。"""
-    entries, bad, bad_headers = {}, set(), []
-    if not isinstance(raw, dict):
-        return entries, bad, bad_headers
-    for k, v in raw.items():
-        if k in TIER_FLEET_KEYS:
-            if not isinstance(v, dict):
-                bad_headers.append(f"{k}: {v}")   # 机队名当标量误用（如 `claude: rogue`）
-                continue
-            for tk, tv in v.items():
-                if tk in TIER_ALLOWED_SUBKEYS:
-                    entries[f"{k}.{tk}"] = "" if tv is None else str(tv)
-                else:
-                    bad.add(f"{k}.{tk}")
-        elif k in TIER_ALLOWED_SUBKEYS:
-            entries[f"flat.{k}"] = "" if v is None else str(v)
-        else:
-            bad.add(k)
-    return entries, bad, bad_headers
-
-
-def _valid_effort_value(fleet, value):
-    """按机队校验 effort 封闭枚举，口径同 resolve-models.sh。"""
-    return value in EFFORT_ALLOWED_VALUES.get(fleet, set())
-
-
-def _effort_tiers_from_dict(raw):
-    """effort-tiers 顶层块的业务校验，口径同 `_model_tiers_from_dict` 但两处收窄：
-    ① 合法机队键为 `claude` 与 `codex`，各自使用独立合法枚举；
-    ② **无扁平旧格式**——effort-tiers 是本 change 新引入的键、无历史遗留包袱，
-    MUST NOT 复用 model-tiers 那条为迁移期旧配置保留的扁平兼容分支（顶层非 `claude` 的其余键，
-    包括看似「扁平」的 `strong`/`mid`/`light` 顶层键，一律计入越域，而非归 `flat.*`）。
-    返回同 `_model_tiers_from_dict` 的三元组语义：entries/bad_subkeys/bad_headers。"""
-    entries, bad, bad_headers = {}, set(), []
-    if not isinstance(raw, dict):
-        return entries, bad, bad_headers
-    for k, v in raw.items():
-        if k in EFFORT_FLEET_KEYS:
-            if not isinstance(v, dict):
-                bad_headers.append(f"{k}: {v}")   # 机队名当标量误用（如 `claude: rogue`）
-                continue
-            for tk, tv in v.items():
-                if tk in TIER_ALLOWED_SUBKEYS:
-                    entries[f"{k}.{tk}"] = "" if tv is None else str(tv)
-                else:
-                    bad.add(f"{k}.{tk}")
-        else:
-            bad.add(k)   # 含 "codex"（越域机队）与其余任意顶层拼写错误，无扁平兼容分支
-    return entries, bad, bad_headers
+# model-tiers / effort-tiers 已随 fan-out 架构退役（config.template.yaml 同注）：流程不再读取，
+# lint 也不再校验——存量 config 里残留的这两个块被忽略，不报违规。
 
 
 def _detect_duplicate_top_keys(cfg_path):
@@ -858,14 +772,9 @@ def _detect_duplicate_top_keys(cfg_path):
 
 def lint_config(root):
     """校验 <root>/openspec/config.yaml 的结构，返回 reason 字符串列表（空 = 干净）。
-    校验项：① 顶层 `schema:` 键存在 ② 顶层 `rules:` 块存在且含 proposal/specs/design/tasks
-    四子键（无条件必填） ③ 顶层 `model-tiers:`（若存在）——机队分键 `{claude,codex}.{strong,mid,
-    light}` 或扁平旧格式 `{strong,mid,light}`（ADR-8），二级键须 ⊆ {claude,codex,strong,mid,light}，
-    且叶子键的**值**须为合法模型 ID（add-codex-host-support D5：拒绝空值/非法字符，防 eval 注入面
-    经消费仓 config 回灌） ④ 顶层 `metrics:`（若存在）`enabled:` 值 ∈ {true,false} ⑤ 顶层
-    `effort-tiers:`（若存在）——`{claude,codex}.{strong,mid,light}`，无扁平旧格式；Claude
-    值域为 {low,medium,high,xhigh,max}，Codex 值域额外含 ultra（封闭域，与
-    resolve-models.sh 解析同口径）。
+    校验项：① 顶层键不重复 ② 顶层 `schema:` 键存在 ③ 顶层 `rules:` 块存在且含
+    proposal/specs/design/tasks 四子键（无条件必填——缺了 TG 必填槽会从生成指令里静默消失）
+    ④ 顶层 `metrics:`（若存在）`enabled:` 值 ∈ {true,false}。
 
     yq 不可用（未装/非 mikefarah）→ `_check_yq()` 前置门给出一条带安装指引的 reason（不崩溃/
     不退出，`lint_config` 的公开契约就是「返回 reason 列表」）。config.yaml 缺失/不可读/整份
@@ -901,54 +810,11 @@ def lint_config(root):
         if missing:
             reasons.append(f"rules: 缺子键 {missing}（须含 proposal/specs/design/tasks）")
 
-    if cfg.get("model-tiers") is not None:  # 条件化：块整段缺失 → 跳过（放行）
-        entries, bad, bad_headers = _model_tiers_from_dict(cfg["model-tiers"])
-        if bad:
-            reasons.append(
-                f"model-tiers: 子键越域 {sorted(bad)}"
-                f"（顶层须 ⊆ {{claude,codex,strong,mid,light}}，机队子块叶子键须 ⊆ {{strong,mid,light}}）")
-        if bad_headers:
-            # 〔Task 6 复评 Critical〕机队头带非空尾随内容（fleet 名当标量误用），是 fleet 归属
-            # 串扰入口——报违规，与 resolve-models.sh 的 reset 语义一致（GC-6/D10）。
-            reasons.append(
-                f"model-tiers: 机队头带尾随内容 {sorted(bad_headers)}"
-                f"（`claude:`/`codex:` 须为空的嵌套块头，值另起 strong/mid/light 缩进行；纯注释头合法）")
-        bad_values = [f"{k}={v!r}" for k, v in sorted(entries.items()) if not _valid_model_id(v)]
-        if bad_values:
-            reasons.append(f"model-tiers: 值非法模型ID {bad_values}"
-                           "（须为 [A-Za-z0-9._-]+，首字符字母数字，可带单个 [字母数字] 尾后缀如 [1M]）")
-
     metrics = cfg.get("metrics")
     if metrics is not None:  # 条件化：块整段缺失 → 跳过（放行）
         enabled = metrics.get("enabled") if isinstance(metrics, dict) else None
         if not isinstance(enabled, bool):
             reasons.append("metrics: enabled 值非法或缺失（须为 true|false）")
-
-    if "effort-tiers" in cfg:  # 键存在即校验；null/list/scalar 不是「块缺失」
-        raw_effort_tiers = cfg["effort-tiers"]
-        if not isinstance(raw_effort_tiers, dict):
-            reasons.append(
-                "effort-tiers: 顶层块类型非法"
-                "（须为 claude/codex 嵌套 mapping，不能为 null、标量或列表）")
-        else:
-            entries, bad, bad_headers = _effort_tiers_from_dict(raw_effort_tiers)
-            if bad:
-                reasons.append(
-                    f"effort-tiers: 子键越域 {sorted(bad)}"
-                    f"（顶层须 ⊆ {{claude,codex}}，无扁平旧格式，机队子块叶子键须 ⊆ {{strong,mid,light}}）")
-            if bad_headers:
-                reasons.append(
-                    f"effort-tiers: 机队头带尾随内容 {sorted(bad_headers)}"
-                    f"（`claude:`/`codex:` 须为空的嵌套块头，值另起 strong/mid/light 缩进行；纯注释头合法）")
-            bad_values = [
-                f"{key}={value!r}" for key, value in sorted(entries.items())
-                if not _valid_effort_value(key.partition(".")[0], value)
-            ]
-            if bad_values:
-                reasons.append(
-                    f"effort-tiers: 值非法 {bad_values}"
-                    "（claude 须 ∈ {low,medium,high,xhigh,max}；"
-                    "codex 须 ∈ {low,medium,high,xhigh,max,ultra}）")
 
     return reasons
 
@@ -983,7 +849,8 @@ def _git_root_or_dot():
 
 def ensure_global_hook(spec):
     """幂等把单个全局 hook 装好：脚本拷进 ~/.claude/hooks/ + 注册进 ~/.claude/settings.json
-    对应 event 的 hooks 列表。spec 形如 HOOKS 里的一项。返回动作描述。
+    对应 event 的 hooks 列表。spec 含 name/src/event/matcher/cmd（ensure_global_hooks 用 HOOKS 项的
+    script + 探测到的解释器拼出 cmd）。本工具已有的注册命令与 cmd 不同则改写。返回动作描述。
     """
     home_claude = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
     acts = []
@@ -1042,11 +909,23 @@ def _register_hook_in_settings_locked(settings, spec):
         event_list = []
         hooks[spec["event"]] = event_list
 
+    found = rewritten = False
     for entry in event_list:
         inner = entry.get("hooks") if isinstance(entry, dict) else None
         for h in (inner or []):
             if spec["name"] in _hook_command(h):
-                return "已注册（全局）"
+                found = True
+                # 只改写本工具形态的命令（引用 hooks/<name> 的落盘脚本）；他人包装命令不动。
+                cmd = _hook_command(h)
+                if cmd != spec["cmd"] and _is_own_hook_command(cmd, spec["name"]):
+                    h["command"] = spec["cmd"]
+                    rewritten = True
+    if found:
+        if not rewritten:
+            return "已注册（全局）"
+        if _atomic_write_settings(settings, data):
+            return f"已注册，命令已更新 → {spec['cmd']}"
+        return "跳过改写（settings.json 写失败，请手动更新命令）"
 
     event_list.append({
         "matcher": spec["matcher"],
@@ -1057,9 +936,40 @@ def _register_hook_in_settings_locked(settings, spec):
     return "跳过注册（settings.json 写失败，请手动注册）"
 
 
+def _hook_interpreter():
+    """全局 hook 注册命令里的解释器 token。
+
+    逐候选**真跑一次** `-c`（不只看 PATH 上有没有）：Windows 上 `python3` 常解析到商店占位
+    程序（存在但一跑就 exit 9009/49），按存在性挑会注册出一条每次都报错、守卫形同虚设的 hook。
+    候选顺序 python3 → python 取裸名（由宿主 PATH 解析，用户升级 Python 后仍有效）；
+    都跑不起来才退回当前解释器的绝对路径（引号包裹、正斜杠，Git Bash / sh 都认）。"""
+    probe = "import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)"
+    for name in ("python3", "python"):
+        exe = shutil.which(name)
+        if not exe:
+            continue
+        try:
+            r = subprocess.run([exe, "-c", probe], capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0:
+            return name
+    return '"' + sys.executable.replace("\\", "/") + '"'
+
+
+def _is_own_hook_command(cmd, name):
+    """本工具注册形态：命令引用 `hooks/<name>` 落盘脚本（任一分隔符）。他人包装命令只是
+    提到这个名字时不算——改写只碰自己的注册。"""
+    return f"hooks/{name}" in cmd.replace("\\", "/")
+
+
 def ensure_global_hooks():
     """按 HOOKS 逐个幂等安装，返回多行汇总。"""
-    lines = [f"  · {spec['name']}：{ensure_global_hook(spec)}" for spec in HOOKS]
+    interp = _hook_interpreter()
+    lines = []
+    for spec in HOOKS:
+        full = dict(spec, cmd=f"{interp} {spec['script']}")
+        lines.append(f"  · {spec['name']}：{ensure_global_hook(full)}")
     codex_home = os.path.expanduser("~/.codex")
     if os.path.isdir(codex_home):
         lines.append("  ⚠ 检测到 Codex 环境，如使用 Codex 会话请注意：hook 仅 Claude 侧生效")
@@ -1274,19 +1184,34 @@ def check_adr_migration(root):
 # ── 主流程 ──────────────────────────────────────────────────
 
 def run(root, mode):
+    osroot = os.path.join(root, "openspec")
+    if mode != "init" and not os.path.isdir(osroot):
+        _die("openspec/ 不存在——update 需在已铺设的项目里跑；空项目请用 init")
+
+    # 外部依赖前置门：先判 CLI 版本门与 yq，再动文件系统——缺依赖时 fail-closed，不留半成品，
+    # 且报真实原因（否则 yq 缺失会在 schema 校验处被折成「权威资产不可读取」）。
+    schema_enabled, schema_msg = _schema_gate(root)
+    yq_ok, yq_reason = _check_yq()
+    if schema_enabled and not yq_ok:
+        _die(f"铺设 project-local schema 需要 mikefarah/yq，当前不可用（未改动任何文件）。{yq_reason}")
+    dep_warnings = []
+    if not schema_enabled:
+        dep_warnings.append(
+            "⚠ OpenSpec CLI 不可用或低于 1.7.0：/g-spec（起手预检）与 /g-done（archive）无法运行。"
+            "安装/升级（npm install -g @fission-ai/openspec@2.1.0，需 Node ≥ 22.20.0）后在本项目重跑 "
+            "`init.py update` 补铺 project-local schema")
+    if not yq_ok:
+        dep_warnings.append(f"⚠ /g-done 的 gate 与 /g-implement 的 suite-scope 依赖 mikefarah/yq ≥ 4.16.0：{yq_reason}")
+
     try:
-        osroot = os.path.join(root, "openspec")
         if mode == "init":
             os.makedirs(osroot, exist_ok=True)
-        elif not os.path.isdir(osroot):
-            _die("openspec/ 不存在——update 需在已铺设的项目里跑；空项目请用 init")
 
         report = []
         made = ensure_dirs(root)
         if made:
             report.append("建目录：" + " ".join(made))
 
-        schema_enabled, schema_msg = _schema_gate(root)
         report.append(schema_msg)
         target_schema = PROJECT_SCHEMA if schema_enabled else BUILTIN_SCHEMA
         # 迁移必须先于 config 切换：补写方读取的是当前旧 schema；颠倒会把在途
@@ -1319,7 +1244,17 @@ def run(root, mode):
         for w in stale_shadow_warnings(root):
             report.append(w)
 
-        cstat, cmsg = handle_config(root, mode, schema=target_schema)
+        # 版本门不过分两种：CLI 版本可解析且 < 1.7.0 ⇒ 降到内置 schema（旧 CLI 读不了 fork）；
+        # CLI 根本不可用（nvm 切版本、IDE 终端 PATH 不同…）⇒ 版本未知，**不碰**已有 config 的
+        # schema 键——否则一次环境抖动就把项目从 g-spec-driven 静默降级，之后新建的 change 全落在
+        # 内置 schema 上。新建 config 仍按内置 schema 落，与「未铺 project-local schema」自洽。
+        cfg_exists = os.path.exists(os.path.join(osroot, "config.yaml"))
+        if not schema_enabled and cfg_exists and _openspec_cli_version()[0] is None:
+            cstat, cmsg = handle_config(root, mode, schema=None)
+            cmsg = (f"OpenSpec CLI 不可用（版本未知）→ 未改 schema 键（当前 "
+                    f"{_schema_from_config(root) or '未设'}）；装好 CLI 后重跑 update 再按版本门处理")
+        else:
+            cstat, cmsg = handle_config(root, mode, schema=target_schema)
         report.append(f"config.yaml：{cmsg}")
 
         runtime_snippet = os.path.join(SNIPPETS, "runtime-gitignore.txt")
@@ -1343,19 +1278,28 @@ def run(root, mode):
 
         if mode == "update":
             report.append(f"ADR 迁移检查：{check_adr_migration(root)}")
-    except (OSError, shutil.Error, ValueError, RuntimeError) as e:
+    except (OSError, shutil.Error) as e:
         _die(f"文件系统操作失败：{e}")
+    except (ValueError, RuntimeError) as e:
+        # 非文件系统错误（schema marker 不可解析、权威资产不全、config 无法改写…）不冠
+        # 「文件系统操作失败」——那会把人引向检查磁盘/权限，而真因在内容。
+        _die(f"g-init {mode} 中止：{e}")
 
     print(f"✓ g-init {mode} 完成 @ {os.path.abspath(root)}\n")
     for r in report:
         print("  - " + r)
+    if dep_warnings:
+        print("\n依赖未齐（文件已铺设，主流程暂不可用）：")
+        for w in dep_warnings:
+            print("  " + w)
     if cstat in ("created", "exists"):
         print("\n下一步（模型/人工）：")
         if cstat == "created":
             print("  · 编辑 openspec/config.yaml 的「## 本项目」context 段，填本项目 tech stack/约定")
         else:
             print("  · 合并 openspec/config.yaml：把模版的「通用」context 段 + rules 并入，保留你的「本项目」段")
-        print("  · 安装配套 skill：bash ~/.skills/g-skills/setup.sh（/g-spec-review /g-code-review /g-done）")
+        print("  · 安装配套 skill：在工具链 checkout 根目录跑 bash setup.sh（/g-review spec|code、/g-done）")
+        print("  · 改完 config 后跑 init.py config-lint，必须 CLEAN")
 
 
 def _die(msg):

@@ -181,7 +181,7 @@ def preflight(root, out):
         _die(
             3,
             "消费仓无 openspec/ 布局——先运行 /g-init 铺设 OpenSpec 工作流"
-            "（安装：bash ~/.skills/g-skills/setup.sh，然后在消费仓会话执行 /g-init；"
+            "（安装：在 gear 工具链 checkout 里跑 bash setup.sh，然后在消费仓会话执行 /g-init；"
             "装完回来重跑本命令）。MUST NOT 自造半套布局。",
         )
     for rel, kind in (("openspec/adr", "dir"), ("openspec/CONTEXT.md", "file")):

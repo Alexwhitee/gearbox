@@ -168,6 +168,32 @@ class TestEdgeCases:
         assert r.returncode == 2
         assert r.stdout == ""
         assert "显式降级" in r.stderr and "setup.sh" in r.stderr
+        assert "~/.skills/g-skills" not in r.stderr          # 不写死约定目录：无锚时给通用说法
+        assert "当初跑 setup.sh 安装本工具的那个 clone" in r.stderr
+
+    def test_broken_pointer_fix_names_the_real_checkout(self, tmp_path):
+        """Windows 指针形态：bundle 不健全时，修复提示点名指针指向的实际 checkout。"""
+        repo = make_repo(tmp_path / "repo")
+        checkout = tmp_path / "anywhere" / "my-gear-clone"
+        (checkout / "g-init" / "assets" / "workflow").mkdir(parents=True)   # 空目录 = 不健全
+        gear = tmp_path / "gear"
+        gear.mkdir()
+        (gear / "workflow-path").write_text(
+            bash_path(checkout / "g-init" / "assets" / "workflow") + "\n", encoding="utf-8")
+        r = run_resolve(repo, gear)
+        assert r.returncode == 2
+        assert f"在运行 checkout（{bash_path(checkout)}）跑 bash setup.sh" in r.stderr
+
+    def test_dangling_symlink_fix_names_the_moved_checkout(self, tmp_path):
+        """Unix 软链形态：checkout 被挪走（软链悬空）时，提示仍说出它原指的 checkout。"""
+        repo = make_repo(tmp_path / "repo")
+        gone = tmp_path / "moved-away" / "g-init" / "assets" / "workflow"
+        gear = tmp_path / "gear"
+        gear.mkdir()
+        _symlink_or_skip(gear / "workflow", gone)
+        r = run_resolve(repo, gear)
+        assert r.returncode == 2
+        assert "moved-away）跑 bash setup.sh" in r.stderr
 
     def test_insane_bundle_treated_as_missing(self, tmp_path):
         repo = make_repo(tmp_path / "repo")

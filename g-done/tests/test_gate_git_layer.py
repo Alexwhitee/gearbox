@@ -382,7 +382,9 @@ def test_foreign_owned_repo_is_refused_without_user_trust(repo, tmp_path, monkey
 @pytest.mark.parametrize("entry", ["{repo}", "*", "{parent}/*"])
 def test_user_declared_safe_directory_lets_foreign_owned_repo_through(
         repo, tmp_path, monkeypatch, entry):
-    value = entry.format(repo=repo, parent=Path(repo).parent)
+    # gitconfig 里 `\` 是转义符：Windows 路径原样写入（`C:\Users\…`）会被 git 判 bad config line，
+    # 整份 global 读失败 ⇒ 透传集为空。用户在 Windows 上声明 safe.directory 也须写正斜杠，故用 as_posix。
+    value = entry.format(repo=Path(repo).as_posix(), parent=Path(repo).parent.as_posix())
     _home_with_gitconfig(tmp_path, monkeypatch, f"[safe]\n\tdirectory = {value}\n")
     _assume_different_owner(monkeypatch)
     assert _sg.run_git(repo, "rev-parse", "--git-dir") != "", \
@@ -404,7 +406,7 @@ def test_only_safe_directory_crosses_the_config_wall(repo, tmp_path, monkeypatch
     commit_all(repo, GBK_SUBJECT)
     _home_with_gitconfig(
         tmp_path, monkeypatch,
-        f"[safe]\n\tdirectory = {repo}\n[i18n]\n\tlogOutputEncoding = GBK\n")
+        f"[safe]\n\tdirectory = {Path(repo).as_posix()}\n[i18n]\n\tlogOutputEncoding = GBK\n")
     _assume_different_owner(monkeypatch)
     assert _sg.run_git(repo, "log", "-1", "--format=%s") == GBK_SUBJECT
 

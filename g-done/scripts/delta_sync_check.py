@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """delta_sync_check.py — g-done 归档后核对 delta 已同步进主 spec.
 
-对归档目录 `specs/<cap>/spec.md` 里的每条 delta，按名字核对 `openspec/specs/<cap>/spec.md`：
+对归档目录 `specs/<cap>/spec.md` 里的每条 delta（`<cap>` 可为嵌套路径，如 `identity/user-auth`，
+与 schema 鼓励的能力分层一致），按名字核对 `openspec/specs/<cap>/spec.md`：
   ADDED / MODIFIED  主 spec 里恰好一条同名 Requirement（缺 = 漏同步；多 = 追加而非替换）
+  MODIFIED          另要求该需求块正文相对 `--base-ref`（缺省 HEAD = 归档前）有变化——
+                    只核名字时，手动同步漏改正文也会恒过（名字本来就在主 spec 里）
   REMOVED           主 spec 里已不存在
   RENAMED           旧名不存在、新名恰好一条
-只比名字、不比正文：归档子代理按代码实况改写正文是允许的，名字是确定性信号。
-只在刚归档时有意义——之后的 change 合法地改名、删除都会让历史归档「不符」。
+ADDED/REMOVED/RENAMED 只比名字、不比正文：按代码实况改写正文是允许的，名字是确定性信号。
+只在刚归档、提交之前有意义——之后的 change 合法地改名、删除都会让历史归档「不符」；
+MODIFIED 正文比较依赖 `--base-ref` 仍是归档前的提交（主 spec 在该 ref 不存在 / 非 git 仓 ⇒ 跳过此项）。
 
 退出码：0 全部同步；1 有缺口（逐条打印）；2 用法错误或归档目录不可读。
 stdlib-only，确定性，fail-closed。
 """
 import argparse
 import re
+import subprocess
 import sys
 
 for _s in (sys.stdout, sys.stderr):
@@ -68,16 +73,43 @@ def main_requirement_names(text):
             for line in _lines_outside_fences(text) if line.startswith(REQ_PREFIX)]
 
 
-def check(archive_dir, specs_root):
+def requirement_block(text, name):
+    """主 spec 中 `### Requirement: <name>` 一节的正文（到下一个 `##`/`###` 标题或 EOF），
+    逐行去尾空白、去首尾空行后返回；找不到 → None。"""
+    lines = list(_lines_outside_fences(text))
+    for i, line in enumerate(lines):
+        if line.startswith(REQ_PREFIX) and line[len(REQ_PREFIX):].strip() == name:
+            body = []
+            for nxt in lines[i + 1:]:
+                if nxt.startswith("## ") or nxt.startswith("### "):
+                    break
+                body.append(nxt.rstrip())
+            return "\n".join(body).strip("\n")
+    return None
+
+
+def spec_text_at_ref(specs_root, rel, ref):
+    """`git show <ref>:./<rel>`（相对 specs_root）；非 git 仓 / 该 ref 无此文件 → None。"""
+    try:
+        r = subprocess.run(["git", "-C", str(specs_root), "show", f"{ref}:./{rel}"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def check(archive_dir, specs_root, base_ref="HEAD"):
     """→ 缺口列表（每项一行人读描述）。"""
     problems = []
-    delta_files = sorted((archive_dir / "specs").glob("*/spec.md"))
+    delta_root = archive_dir / "specs"
+    delta_files = sorted(delta_root.glob("**/spec.md"))
     for delta_path in delta_files:
-        cap = delta_path.parent.name
+        cap = delta_path.parent.relative_to(delta_root).as_posix()
         delta = parse_delta(delta_path.read_text(encoding="utf-8"))
         main_path = specs_root / cap / "spec.md"
-        names = (main_requirement_names(main_path.read_text(encoding="utf-8"))
-                 if main_path.is_file() else [])
+        main_text = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
+        names = main_requirement_names(main_text) if main_path.is_file() else []
         if not main_path.is_file() and (delta["ADDED"] or delta["MODIFIED"] or delta["RENAMED"]):
             problems.append(f"{cap}: 主 spec 不存在（{main_path}），delta 一条都没同步")
             continue
@@ -88,6 +120,16 @@ def check(archive_dir, specs_root):
                     problems.append(f"{cap}: {kind} 未同步：{name}")
                 elif n > 1:
                     problems.append(f"{cap}: {kind} 在主 spec 出现 {n} 次（应替换而非追加）：{name}")
+        if delta["MODIFIED"]:
+            before_text = spec_text_at_ref(specs_root, f"{cap}/spec.md", base_ref)
+            if before_text is not None:
+                for name in delta["MODIFIED"]:
+                    if names.count(name) != 1:
+                        continue                  # 缺失/重复已在上面报过
+                    before = requirement_block(before_text, name)
+                    if before is not None and before == requirement_block(main_text, name):
+                        problems.append(f"{cap}: MODIFIED 正文与 {base_ref}（归档前）相同，"
+                                        f"疑似只核了名字、未替换正文：{name}")
         for name in delta["REMOVED"]:
             if name in names:
                 problems.append(f"{cap}: REMOVED 仍在主 spec：{name}")
@@ -105,6 +147,8 @@ def main(argv=None):
                     help="归档目录，如 openspec/changes/archive/2026-10-21-foo")
     ap.add_argument("--specs-root", default=None,
                     help="主 spec 根目录，缺省为归档目录向上推出的 openspec/specs")
+    ap.add_argument("--base-ref", default="HEAD",
+                    help="归档前的提交（MODIFIED 正文比较的基准），缺省 HEAD——须在归档提交之前运行")
     args = ap.parse_args(argv)
 
     archive_dir = Path(args.archive_dir)
@@ -117,7 +161,7 @@ def main(argv=None):
               file=sys.stderr)
         return 2
 
-    problems = check(archive_dir, specs_root)
+    problems = check(archive_dir, specs_root, args.base_ref)
     if problems:
         print(f"delta_sync_check: ✗ {len(problems)} 处 delta 未同步进主 spec（{archive_dir.name}）")
         for p in problems:

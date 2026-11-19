@@ -93,19 +93,13 @@ git status --short
 openspec --version
 ```
 
-如果尚未初始化 OpenSpec，先在该项目运行：
-
-```bash
-openspec init
-```
-
-然后在 AI 会话里调用：
+不需要先运行 `openspec init`（`/g-init` 会自己建好 `openspec/` 骨架与配置），直接在 AI 会话里调用：
 
 ```text
 /g-init
 ```
 
-初始化后，需要让执行者根据真实项目补充 `openspec/config.yaml` 的技术栈、边界与约定。已有配置时保留项目内容，合并通用 context 和 rules；不要用模板整份覆盖原配置。
+初始化后，需要让执行者根据真实项目补充 `openspec/config.yaml` 的技术栈、边界与约定。已有配置时保留项目内容，合并通用 context 和 rules；不要用模板整份覆盖原配置。改完配置后运行 `init.py config-lint`，结果须为 CLEAN。
 
 ### 2.3 给出一项真实需求
 
@@ -209,7 +203,7 @@ openspec/changes/filter-orders-by-status/
 | 位置 | 放什么 | 常见例子 |
 |---|---|---|
 | 工具链 checkout | 本仓源码、skills、模板、测试、安装器 | `~/.skills/g-skills/` |
-| 全局安装位置 | 宿主发现的 skills、共享规则入口、辅助脚本 | `~/.agents/skills/`、`~/.claude/skills/`、`~/.g/` |
+| 全局安装位置 | 宿主发现的 skills、共享规则入口、辅助脚本 | `~/.agents/skills/`、`${CLAUDE_CONFIG_DIR:-~/.claude}/skills/`、`~/.g/` |
 | 消费项目 | 你真正开发的软件、项目配置、变更与报告 | `/path/to/your-project/openspec/` |
 
 脚本位于工具链或已安装的 skill 目录中；脚本的 `--root` 通常指向**消费项目根目录**。把两者弄反，会让脚本检查或修改错误的仓库。
@@ -266,9 +260,9 @@ flowchart TD
 | Git | 分支、内容树、checkpoint、恢复与合并 | 必需，需能正常访问消费项目的 Git 记录 |
 | Bash | 安装器与辅助脚本 | macOS / Linux 使用 Bash；Windows 使用 Git Bash |
 | Python 3 | 本地 helpers、recorder、lint | 安装器探测下限为 3.7；本仓 CI 的 Python 档为 3.9 / 3.12 / 3.14 |
-| mikefarah/yq | 通用 YAML 与 frontmatter 的读取和校验 | 至少 4.16.0；本仓 CI 固定 4.53.6 |
-| OpenSpec CLI | 创建 change、读取上下文与 instructions、validate、archive | 主流程必需；本仓 CLI 契约测试固定 1.14.3 |
-| Node.js / npm | 运行 OpenSpec CLI，开发时安装 DOM 测试依赖 | 复现 CLI 测试可使用 CI 的 Node 22；CLI 1.14.3 的 Node 下限为 20.19.0 |
+| mikefarah/yq | 通用 YAML 与 frontmatter 的读取和校验 | 主流程必需（`/g-done` gate、`/g-implement` suite-scope）；至少 4.16.0；本仓 CI 固定 4.53.6 |
+| OpenSpec CLI | 创建 change、读取上下文与 instructions、validate、archive | 主流程必需（`/g-spec` 起手预检、`/g-done` archive）；至少 1.7.0；本仓 CLI 契约验证版本 2.1.0 |
+| Node.js / npm | 运行 OpenSpec CLI，开发时安装 DOM 测试依赖 | CLI 2.1.0 的 Node 下限为 22.20.0；CI 使用 Node 24 |
 | pytest | 开发本工具仓、运行回归测试 | `pytest>=8`；使用 skills 本身不要求安装 pytest |
 | Chromium / Playwright | 本工具仓的评审页浏览器回归 | 仅相关开发测试需要，不是日常工作流的运行依赖 |
 
@@ -283,11 +277,13 @@ yq --version
 openspec --version
 ```
 
-复现本仓固定 CLI 版本的安装命令：
+安装本仓 CLI 契约验证版本（不要装不带版本号的 latest——OpenSpec 换大版本时 instructions / status / archive 的 JSON 契约可能变化，`/g-spec` 会 fail-closed 中止）：
 
 ```bash
-npm install -g @fission-ai/openspec@1.14.3
+npm install -g @fission-ai/openspec@2.1.0
 ```
+
+升级验证版本的做法：用新版本跑 `hack/tests/test_openspec_cli_contract.py`（端到端走一遍 g-init → new change → instructions → validate → archive），全绿后同步改 CI、`hack/setup-dependencies.sh`、本节与 `g-spec/SKILL.md` 0.1 的版本号——该测试会机械比对这几处是否一致。
 
 安装器会提供各平台的缺依赖指引，不会自动把所有系统依赖装齐。消费项目需要的数据库、容器、硬件 SDK、测试服务等由项目自身决定。
 
@@ -295,16 +291,18 @@ npm install -g @fission-ai/openspec@1.14.3
 
 | 落点 | 用途 | 更新方式 |
 |---|---|---|
-| `~/.claude/skills/<skill>/` | Claude 一侧的 skill 发现目录 | Unix 为源码绝对路径软链，Windows 为受管理复制 |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/<skill>/` | Claude 一侧的 skill 发现目录（设置了 `CLAUDE_CONFIG_DIR` 就装进它，与 Claude Code 读取的目录一致） | Unix 为源码绝对路径软链，Windows 为受管理复制 |
 | `~/.agents/skills/<skill>/` | 共享 Agent Skills 目录，供支持它的宿主发现 | 同上 |
 | `~/.g/workflow` | Unix 上共享规则目录的软链 | 指向当前工具链 checkout 的权威规则源 |
 | `~/.g/workflow-path` | Windows 上共享规则源的路径指针 | 由 resolver 读取 |
 | `~/.g/hack/` | checkpoint、规则解析、页面生成等辅助工具 | 复制安装，修改源文件后必须重跑 setup |
-| `~/.claude/agents/` | 兼容安装器保留的三个历史角色定义 | 由安装器维护自属定义；当前主流程不派发这些角色 |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/agents/` | 不再铺设任何定义（g-spec 的三个子代理定义已随子代理派发退役） | 安装器撤下以前铺出的自属定义（manifest 记录 + 本仓布局的悬空链），第三方文件不动 |
 
 安装器通过根目录下的 `SKILL.md` 识别 skill，`docs/`、`hack/` 等不会被误装成 skill。已有的非本工具同名实体目录会被跳过并报告，不会无条件覆盖。
 
 新共享位置安装成功后，安装器会清理旧 `~/.codex/skills/` 中可确认属于本工具的对应安装项，保留其它 skills。
+
+Windows 上的 `~/.g/workflow-path` 指向任一本工具 checkout 的规则目录（`<checkout>/g-init/assets/workflow`）都算自属，换一个 checkout 重跑 setup 会接管；指向其它工具的指针保持不动并进 skipped 汇总，hack 脚本照常安装。
 
 **不要在安装后删除或随意移动工具链 checkout。** Unix skill 软链与全局规则源需要它持续存在。
 
@@ -324,12 +322,16 @@ python3 "$HOME/.agents/skills/g-init/scripts/init.py" init --root .
 1. `openspec/changes/`、`openspec/specs/` 等核心目录。
 2. 人读手册 `openspec/workflow/WORKFLOW-GUIDE.md`。
 3. CLI 版本门允许时，铺设 `openspec/schemas/g-spec-driven/`。
-4. 新建配置或窄改配置的 `schema` 键，并提示人工/AI 合并项目内容。
+4. 新建配置或窄改配置的 `schema` 键，并提示人工/AI 合并项目内容；合并完必须跑 `init.py config-lint`，结果须为 CLEAN。
 5. 注入 `CLAUDE.md`、`AGENTS.md`、`openspec/INDEX.md` 的托管区块。
 6. 合并托管的运行时忽略项，检查旧规则残留。
 7. 幂等安装 Claude 全局 hooks，并清理可识别的退役 hook / 部署文件。
 
-其中 hook 包括分支守卫，以及兼容保留的 `g-*` 子代理权限请求守卫；**后者存在不表示当前流程会启动子代理**。这些是 Claude hook 机制，不应声称在所有宿主上都有相同的工具拦截效果。
+当前全局 hook 只有分支守卫（`ff0-branch-guard.py`）。注册命令里的解释器在注册时探测：`python3` 能真正运行才用，否则用 `python`，再否则用执行 init 的解释器绝对路径——Windows 上 `python3` 常是微软商店占位程序，写死它会让 hook 每次报错、守卫失效。本工具已有的注册命令与探测结果不同时会被改写；他人注册不动。已退役的子代理权限守卫（`subagent-permission-guard.py`）会在 init/update 或 setup 末尾被摘注册、删脚本。这些是 Claude hook 机制，不应声称在所有宿主上都有相同的工具拦截效果。
+
+**不需要先运行 `openspec init`**：init.py 会自己建好 `openspec/` 目录骨架与配置。`openspec init` 在非交互环境要求 `--tools`，带上它又会安装 OpenSpec 自带的 apply/archive 入口，绕开 `/g-implement` 与 `/g-done`。
+
+托管区块按目标文件原有的换行风格（LF / CRLF）写入，区块之外的内容逐字节保留。
 
 托管标记之外的项目内容会保留。想修改托管内容，应修改工具源中的 snippets，再更新项目，不要直接改标记内部。
 
@@ -337,8 +339,10 @@ python3 "$HOME/.agents/skills/g-init/scripts/init.py" init --root .
 
 `g-init` 检查 OpenSpec CLI 版本：
 
-- CLI 可解析且至少 1.7.0：允许铺设 project-local 的 `g-spec-driven` schema。
-- CLI 不可用、版本不可解析或过低：不铺该 schema，按脚本的降级路径保持内置 `spec-driven`。
+- CLI 可解析且至少 1.7.0：允许铺设 project-local 的 `g-spec-driven` schema，并把 config 的 `schema:` 指向它。
+- CLI 版本可解析但低于 1.7.0：不铺该 schema，config 的 `schema:` 降到内置 `spec-driven`（旧 CLI 读不了 fork）。
+- CLI 不可用或版本不可解析：不铺该 schema；**已有 config 的 `schema:` 不动**（避免 nvm 切版本、IDE 终端 PATH 不同这类环境抖动把项目静默降级），新建的 config 按内置 `spec-driven` 落。装好 CLI 后重跑 `update` 即按版本门处理。
+- 在途 change 已有 `.openspec.yaml` 标记（包括钉在消费仓自有 schema 上的）一律原样保留；只有解析不出非空 `schema` 值才报错中止。
 - 切换项目前，先为符合迁移条件的在途 change 补写其原 schema 标记，避免全局配置切换改变在途解释。
 
 这个 schema 描述四件套的结构与依赖，也为不改变行为的变更提供 `skip_specs` 语义。schema 中历史名为 delegation 的提示块现在负责引导回 `/g-spec` 入口，不提供多代理调度。
@@ -372,7 +376,7 @@ python3 "$HOME/.agents/skills/g-init/scripts/init.py" init --root .
 | [g-devenv](./g-devenv/SKILL.md) | 梳理测试策略、开发环境与测试执行路径 | 真实代码、现有工具、可选 SAD | 环境文档、测试策略、泳道状态、脚手架 |
 | [g-issues](./g-issues/SKILL.md) | 记录缺陷、优化、技术债，跟踪处理状态 | 描述、模块、来源与证据 | B/T 单文件台账与生成索引 |
 | [g-adr](./g-adr/SKILL.md) | 新建决策、变更后同步决策、存量体检 | 决策背景、代码、change | ADR 文件、格式检查、偏离项记录 |
-| [g-retro](./g-retro/SKILL.md) | 查看阶段耗时与已有历史评审数据 | Git 历史、变更报告 | 再生 `openspec/retro/report.md` |
+| [g-retro](./g-retro/SKILL.md) | 查看各 change 的阶段耗时与人工门等待 | Git 历史、设计门报告 | 再生 `openspec/retro/report.md` |
 
 ### 5.1 根据当前问题选入口
 
@@ -528,10 +532,10 @@ done 不把对话里的“刚才应该做完了”当状态，而是运行 `ship
 
 - 固定标题 `### Task N: ...`。
 - `Blocked-by`：必须先完成的票号，或者 `none`。
-- `R-ID`：对应的需求标识。
+- `R-ID`：该票实现的 `tasks.md` 条目编号（如 `1.1`，逗号分隔）；`tasks.md` 的每个编号条目至少被一张功能票认领，不得引用不存在的编号。
 - 可执行、可观察的验收条件。
 
-收尾票必须唯一，`R-ID: all`，并明确依赖全部功能票。出票后运行预算检查并提交；`tickets.md` 的首次提交是后续完成标签窗口的起点。
+收尾票必须唯一，`R-ID: all`，并明确依赖全部功能票。出票后运行 `plan-budget`（同时检查预算、收尾票契约与 R-ID 覆盖），退出 0 再提交；`tickets.md` 的首次提交是后续完成标签窗口的起点。
 
 `tasks.md` 是变更级工作清单；`tickets.md` 是实施时的依赖与验收计划。两者职责不同，不能用一个文件替换另一个。
 
@@ -857,7 +861,7 @@ ADR 的 lint 负责结构与格式，不证明文字与代码一致。sync / aud
 python3 "$HOME/.agents/skills/g-retro/scripts/retro_report.py" --root "$(git rev-parse --show-toplevel)"
 ```
 
-它从 Git checkpoint、活动/归档 change 的报告和已有历史数据再生：
+它从 Git checkpoint 时间线与设计门报告（`design_approved`）再生成本复盘——阶段墙钟、人工门拆分、总览、逐 change 明细与聚合统计：
 
 ```text
 openspec/retro/report.md
@@ -865,7 +869,7 @@ openspec/retro/report.md
 
 “只读复盘”表示不改变实现、规格、issue 状态或流程决策；再生报告文件本身会写盘。
 
-当前简化流程不再生成 token 快照和 lens 度量锚。旧数据仍兼容读取，缺数据应理解为“未覆盖”，不能当成零成本、零发现或完整统计。
+只统计当前流程真实产生的数据。token 快照、lens 度量锚等已退役的数据不再读取，`--scan-codex-sessions` 已删除。
 
 阶段墙钟来自提交时间差，包含等待、讨论和其它间隔，不是模型纯计算时间，也不能直接作为精确费用核算。
 
@@ -1326,9 +1330,11 @@ python3 "$G_SKILLS_ROOT/g-done/scripts/branch_context.py" show --root . --change
 ### 14.4 检查票依赖、预算与测试范围
 
 ```bash
+# 默认读同目录 tasks.md 校验 R-ID 覆盖（可用 --tasks 指定）；另报收尾票契约违规
 python3 "$G_SKILLS_ROOT/g-implement/scripts/impl_route.py" plan-budget --plan openspec/changes/filter-orders-by-status/tickets.md
 
-# done 列表只是参数形状；实际必须取 gate 的 done_tasks
+# done 列表只是参数形状；实际必须取 gate 的 done_tasks。写了 `BLOCKED:` 行的票不再派发；
+# 剩余票全被 BLOCKED 时退出码 4（先由人处理阻塞并删掉该行）
 python3 "$G_SKILLS_ROOT/g-implement/scripts/impl_route.py" frontier --plan openspec/changes/filter-orders-by-status/tickets.md --done none
 
 python3 "$G_SKILLS_ROOT/g-implement/scripts/impl_route.py" suite-scope --root . --change filter-orders-by-status
@@ -1479,7 +1485,7 @@ update 不自动把模板中的全部 context / rules 覆盖进已有配置。�
 | 找不到 roadmap / devenv 评审页 | 检查 `render-review-page.py` 与 review-page 资产是否已 setup；Markdown 仍保留，报告页面缺口 |
 | 架构 lint 绿，但仍要求人确认 | lint 只检查结构，事实真实性、假设与决策仍需要人判断 |
 | devenv 有 planned/scaffolded 是否失败 | 是真实未验证状态，可合法交付；按 blocked_by 补条件后 continue |
-| retro 没有 token / lens 数字 | 当前流程不再采集这些锚；显示未覆盖，不通过补零或估算制造完整度 |
+| retro 没有 token / lens 数字 | 这些数据已随流程精简退役，retro 只做阶段墙钟与人工门等待的成本复盘 |
 
 遇到其它故障，保留 `problem / cause / fix`、实际退出码、命令原文与相关路径，比一句“流程卡住了”更容易恢复。
 

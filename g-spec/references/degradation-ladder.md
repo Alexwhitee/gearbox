@@ -43,10 +43,10 @@
 | **在其它 feature 分支上开新 change** | FF-0 三分支判定 | 「其它」→ **halt 问人**（从当前切出 / 回 base 切出 / 就地继续） | 未建目录 |
 | **`git checkout -b` 失败（分支已存在）** | 命令 exit code | fallback `git checkout feat/{change}`（存在则复用）；再失败即如实报告让人决定 | — |
 | **陈旧 `decision-memo.md`** | 相位 C 起手核身份字段（change/branch）对不上当前盘面 | **拒绝进 C**，呈现旧 memo 摘要给人确认；MUST NOT 静默复用 | — |
-| **生成产物半截/无效** | `status --json`（存在态）+ `validate --strict`（合格态）**分开判** | validate 不过即判该产物**未完成**，按错误类别修复或重试（**非**「文件存在即跳过」）；写入用临时文件 + 原子替换 | 按 preimage 精确回滚该文件 |
+| **生成产物半截/无效** | 每份写后 `status --json`（存在态）；specs 写完后与终审时 `validate --strict`（合格态）**分开判** | validate 不过即判 specs **未完成**，按错误类别修复或重试（**非**「文件存在即跳过」）；proposal/design 写完时 change 尚无 delta，**MUST NOT** 在此时跑 validate 并据其判红；写入用临时文件 + 原子替换 | 按 preimage 精确回滚该文件 |
 | **CLI schema 漂移（版本对、行为变）** | `instructions --json` 后做最小 schema 断言 | **fail-closed 中止**，报实际版本 + 修复命令 | 未写产物 |
 | **openspec CLI 不可用/报错** | 命令 exit code | **fail-closed 中止**（含版本与修复命令） | `new change` 前后各记一次 change 目录快照；非零退出后核 `.openspec.yaml`/`status`，**精确报告 partial state，MUST NOT 假定其原子性** |
-| **生成中断（部分产物完成）** | `status` + `validate` 对账 | 如实报告完成/未完成清单；按相位状态机重入 | 分支内 git 状态即真相 |
+| **生成中断（部分产物完成）** | `status` + `validate` 对账 | 如实报告完成/未完成清单；按相位状态机重入（四件套齐但缺 `checkpoint(g-spec-generate)` 或 change 目录不干净 ⇒ 待终审，补跑终审 + checkpoint） | 分支内 git 状态即真相 |
 | **纪要缺失/必填为空进入相位 C** | C 起手核验 | 拒绝生成，退回相位 B | — |
 
 ## 5. `validate --strict` 的真实覆盖面（诚实边界，实测锚定）
@@ -64,6 +64,10 @@
 **终审**读回时人判：文末是否收束（最后一节写完、无半句话）、`## ` 小节是否齐全、有无「TODO/待补」残留。
 
 MUST NOT 在任何文档中声称「`validate --strict` 挡得住半截 design.md」。
+
+推论（跑的时点）：「至少一条 delta」也意味着 specs 写出之前 `validate --strict` 必红。所以它只在
+specs 写完后与终审时跑（`skip_specs: true` 的 change 只在终审跑）；在 proposal / design 写完时跑并据此
+判「未完成」，是把合格产物送进重试死循环。
 
 ---
 

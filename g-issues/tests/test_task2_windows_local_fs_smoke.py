@@ -17,36 +17,12 @@ import sys
 
 import pytest
 
+from test_support.home import isolated_home_env
+from test_support.windows import bash_executable
+
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="requires actual Windows local disk")
 ROOT = Path(__file__).parents[2]
-
-
-def _git_bash():
-    """定位 Git for Windows 的 bash，跳过 WSL 的 System32\\bash.exe。
-
-    GitHub windows-latest 上裸 "bash" 会解析到 C:\\Windows\\System32\\bash.exe
-    （WSL 启动器，未装 distro），无法执行 setup.sh，只会打印 "no installed
-    distributions ... <Distro>' to install." 后 exit 1。优先从 git 可执行文件所在的
-    Git 安装树推导 git-bash，再退到已知安装路径。找不到即显式报错，不静默回落 WSL。
-    """
-    git = shutil.which("git")
-    if git:
-        git_root = Path(git).resolve().parent.parent  # ...\Git\cmd\git.exe -> ...\Git
-        for rel in ("bin/bash.exe", "usr/bin/bash.exe"):
-            candidate = git_root / rel
-            if candidate.is_file():
-                return str(candidate)
-    for candidate in (
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ):
-        if os.path.isfile(candidate):
-            return candidate
-    raise RuntimeError(
-        "git-bash 未找到；System32 的 WSL bash 无法执行 setup.sh。请安装 Git for Windows。"
-    )
 
 
 def _load(name, relative):
@@ -68,13 +44,14 @@ def test_windows_setup_uses_owned_copies_and_refreshes_them(tmp_path):
     assert sys.platform == "win32"
     home = tmp_path / "home"
     home.mkdir()
-    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), G_HOME=str(home / ".g"))
+    env = isolated_home_env(home)
+    env["G_HOME"] = str(home / ".g")
 
     for _ in range(2):
         # setup.sh 输出含 UTF-8 非 ASCII（⚠/✓/→/中文）；Windows subprocess text 模式默认走
         # locale 编码（cp1252）会在读管道线程里解码崩 → stdout=None。显式 utf-8 + replace 兜底。
         result = subprocess.run(
-            [_git_bash(), str(ROOT / "setup.sh")], env=env,
+            [bash_executable(), str(ROOT / "setup.sh")], env=env,
             text=True, encoding="utf-8", errors="replace",
             capture_output=True, timeout=120,
         )

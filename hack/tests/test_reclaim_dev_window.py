@@ -33,6 +33,7 @@ from pathlib import Path
 
 import pytest
 
+from test_support.home import isolated_home_env
 from test_support.windows import bash_executable, bash_path
 
 if os.name == "nt":
@@ -42,7 +43,7 @@ if os.name == "nt":
     )
 
 REPO = Path(__file__).resolve().parents[2]
-REAL_SKILLS = Path(os.path.expanduser("~")) / ".claude" / "skills"
+REAL_SKILLS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")) / "skills"
 
 # 造假 checkout 时最少要有的东西：一个可安装 skill + 让 is_our_checkout_path 认得出的两个特征文件。
 _FINGERPRINT_REL = "g-init/assets/hack/skill-principles.md"
@@ -79,9 +80,7 @@ def _make_checkout(root: Path, *, fingerprint: bool = True) -> Path:
 
 
 def _run_setup(checkout: Path, home: Path):
-    env = dict(os.environ)
-    env["HOME"] = str(home)
-    env.pop("G_HOME", None)  # 否则 install_g 会写真实 ~/.g
+    env = isolated_home_env(home)  # 去掉 G_HOME / CLAUDE_CONFIG_DIR，否则会写真实 ~/.g 或真实 Claude 配置目录
     # encoding/errors 显式声明：本仓 `test_subprocess_encoding_contract` 的硬契约——
     # text 模式不指定 utf-8 会在 Windows runner 上按 locale 解码而崩（实证坑）。
     return subprocess.run(

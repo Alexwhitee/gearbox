@@ -3,6 +3,7 @@
 重点在 verify-lane：它是 skill 唯一「产生新事实」的地方（真 fork 执行，拿真 exit code）。
 """
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -405,6 +406,8 @@ def test_verify_lane_timeout(repo):
     assert "未确认是环境问题还是 smoke 本身挂了" in lane["blocked_by"]
 
 
+@pytest.mark.skipif(shutil.which("make") is None,
+                    reason="需要 GNU make：重名警告由 make 自己打出（Windows 默认无 make）")
 def test_verify_lane_surfaces_make_overriding_warning(repo, capsys):
     """⭐ A24：target 重名 —— 【让 make 自己回答】。
 

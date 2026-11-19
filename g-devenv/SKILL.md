@@ -478,6 +478,8 @@ python3 ~/.claude/skills/g-devenv/scripts/devenv_lint.py --root "$REPO"    # 只
     不以 `/` 结尾 = 精确路径相等）：分区目录一律以 `/` 结尾写入非默认域 `paths`；**层命令自身引用的文件**
     （如测试运行脚本 `hack/run-tests.sh`）SHALL 以**精确路径（不带尾斜杠）** 写入**默认域** `paths`——
     该精确路径比目录前缀更长，最长前缀胜出，使改动运行脚本本身的 change 归默认域而非工具域。
+    **漏写尾斜杠会被拒**：不以 `/` 结尾、但在被测提交里实际是目录的路径，`suite-scope` 判为配置错误
+    （退出码 6，提示补 `/`）——否则该目录下的改动一条也匹配不上，会悄悄落进默认域、甚至零测试放行。
   - **已有 `domains` 配置时 MUST NOT 覆盖**——与上面「已有配置不覆盖」同纪律，不做二次调优。
 - **落地方式**：直接编辑 `openspec/config.yaml`（不是 `.devenv.json`，本 skill 对它无脚本
   owns——config.yaml 的 schema 归 `g-init`），diff 与其余落地物同规格，交④冷审 + 人门的

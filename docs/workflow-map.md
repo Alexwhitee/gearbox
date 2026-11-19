@@ -14,6 +14,7 @@ g-review spec：广审、领域、对抗、接地 → spec-review-report
 g-done：每步前后调用 ship_gate
     ├─ g-implement mode=plan → tickets.md → 提交
     ├─ g-implement mode=exec → 逐票实现、自审、验收 → checkpoint
+    ├─ （默认停：/clear 后重调 /g-done，代码审不带实现上下文）
     ├─ g-review code → code-review-report + 内容指纹
     ├─ verify → verify-report + 内容指纹
     └─ hand-off → archive → delta 核验 → commit → ff-only merge
@@ -24,19 +25,21 @@ g-done：每步前后调用 ship_gate
 
 | 状态 | 动作 | 判据 |
 |---|---|---|
-| REFUSE_START | 返回设计门 | 缺 change 或设计批准 |
+| REFUSE_START | 返回设计门（缺纪要则回 g-spec） | 缺 change、缺定稿的 decision-memo，或缺设计批准 |
 | RUN_PLAN | 出票 | tickets.md 缺失 |
 | CONTINUE_IMPL | 逐票执行 | 仍有票缺已提交的完成标签 |
+| IMPL_BLOCKED | 停止交人 | 未完成票段内有 `BLOCKED:` 行；人处理后删该行并提交再重调 |
 | RUN_CODE_REVIEW | 代码审 | 实现完成，无评审报告 |
-| BLOCKED_UPSTREAM | 停止 | 代码审 blocked |
+| BLOCKED_UPSTREAM | 停止 | 代码审 blocked，且之后没有修复提交（有则转 RERUN_STALE 重审） |
 | RUN_VERIFY | 验证或继续收尾 | 缺 verify，或归档/merge 尚未完成 |
-| VERIFY_FAIL | 停止并展示缺口 | 新鲜 verify=FAIL |
+| VERIFY_FAIL | 停止并展示缺口 | 新鲜 verify=FAIL；代码缺口修复提交后自动重验，只缺证据时经人确认整节重做 verify |
 | RERUN_STALE | 重跑对应步骤 | 被审查内容已变化 |
 | STEP_IN_PROGRESS | 继续对应步骤 | 报告缺结论或 defer 未对账 |
+| ARCHIVE_UNCOMMITTED | 从 delta 核验继续 | 已 archive、归档目录尚未提交 |
 | SHIPPED | 结束 | 归档已并指定目标，或不合并并留在工作分支完成，或明确跳过合并 |
 | UNKNOWN | 报告原因 | 坏计划、坏锚或判定不能 |
 
-JSON 中旧 next 名只为兼容：g-spec-review → g-review spec；g-code-review → g-review code。
+JSON 中 next=g-code-review 即 g-review code（旧名保留兼容）。实现完成后若 design/specs 在设计批准后又被改动，后段各判定的 JSON 附 `design_drift`（变化路径），须交人重审设计或明确确认。
 
 ## 核心契约
 
@@ -50,7 +53,7 @@ JSON 中旧 next 名只为兼容：g-spec-review → g-review spec；g-code-revi
 - `.g-branch.json` 保存 source_branch/work_branch/base_sha/merge_target：从 a 新建默认留在功能分支且不合并，原地开发默认提交归档留在 a；只有明确指定才改目标。评审、suite-scope（传 --change）与 ADR 用固定 base_sha，合并用 merge_target；缺约定先核对补录，不猜默认分支。skip merge 后再次明确请求合并，先明确/沿用目标，再删除并单独提交归档标记，由 gate 续跑。
 - gate 校验格式、完成标签、内容新鲜度与 defer ID 对账；不证明语义审查或测试确实发生。
 - 单会话内联检查不具备独立上下文。设计批准仍须由真人明确给出。
-- 历史 metrics/token 数据只供 g-retro 兼容读取；当前不生成、不强制要求度量锚。
+- g-retro 只统计当前流程确定产出的信号（checkpoint 提交时间线、设计门锚）；评审逐镜度量与 token 用量不生成，也不读取或估算。
 
 ## 工具与维护
 

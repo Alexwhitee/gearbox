@@ -3,6 +3,8 @@
 口径：预算票 = 全部票 − 合规迁移批次 − 唯一「R-ID: all」收尾票，预算票数 ≤ BUDGET_MAX。
 迁移批次豁免须机读声明（批次票 `Migration-of: <expand 号>`，expand 票 `Transform: <变换>`），
 且结构合规（批次 Blocked-by 恰为 {expand}；存在 contract 票 Blocked-by ⊇ 全部批次），否则报违规。
+另：收尾票契约复用 gate `plan_closing_ticket_check`（出票当场报，不等提交后 gate 判 UNKNOWN）；
+给出 tasks.md 时校验 R-ID 覆盖（R-ID = tasks.md 编号条目，每条至少一张票认领、每个 R-ID 都真实存在）。
 """
 import json
 import subprocess
@@ -23,7 +25,7 @@ needs_full_repo = pytest.mark.skipif(
     reason="被测语料是本仓 openspec/ 归档；发布 clone 不含 openspec/")
 
 
-def _task(n, title, blocked_by, r_id="R1", extra=""):
+def _task(n, title, blocked_by, r_id="1.1", extra=""):
     return (f"### Task {n}: {title}\n\n**Blocked-by:** {blocked_by}\n**R-ID:** {r_id}\n"
             f"{extra}\n- [ ] x\n\n")
 
@@ -134,6 +136,7 @@ def _run_cli(plan_path):
 def test_cli_plan_budget_ok_exit0(tmp_path):
     p = tmp_path / "tickets.md"
     p.write_text(_plan(*_functional_chain(3), _closing(4, "1, 2, 3")), encoding="utf-8")
+    (tmp_path / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n", encoding="utf-8")
     r = _run_cli(p)
     assert r.returncode == 0, r.stderr
     assert json.loads(r.stdout)["violations"] == []
@@ -143,6 +146,7 @@ def test_cli_plan_budget_violation_exit1(tmp_path):
     p = tmp_path / "tickets.md"
     p.write_text(_plan(*_functional_chain(7), _closing(8, "1, 2, 3, 4, 5, 6, 7")),
                  encoding="utf-8")
+    (tmp_path / "tasks.md").write_text("## 1. G\n\n- [ ] 1.1 a\n", encoding="utf-8")
     r = _run_cli(p)
     assert r.returncode == 1
     assert json.loads(r.stdout)["violations"]
@@ -151,6 +155,131 @@ def test_cli_plan_budget_violation_exit1(tmp_path):
 
 def test_cli_plan_budget_topo_error_exit6(tmp_path):
     p = tmp_path / "tickets.md"
-    p.write_text(_plan("### Task 1: A\n**R-ID:** R1\n- [ ] x\n"), encoding="utf-8")
+    p.write_text(_plan("### Task 1: A\n**R-ID:** 1.1\n- [ ] x\n"), encoding="utf-8")
     r = _run_cli(p)
     assert r.returncode == 6
+
+
+# ---------------------------------------------------------------------------
+# 收尾票契约（复用 gate plan_closing_ticket_check）
+# ---------------------------------------------------------------------------
+
+def test_plan_budget_missing_closing_ticket_is_violation():
+    res = ir.plan_budget(_plan(*_functional_chain(3)))
+    assert any("收尾" in v for v in res["violations"]), res["violations"]
+
+
+def test_plan_budget_closing_ticket_not_covering_all_functional_is_violation():
+    res = ir.plan_budget(_plan(*_functional_chain(3), _closing(4, "1, 2")))
+    assert any("收尾" in v and "3" in v for v in res["violations"]), res["violations"]
+
+
+def test_plan_budget_closing_ticket_title_without_verification_is_violation():
+    bad = "### Task 4: 补文档\n\n**Blocked-by:** 1, 2, 3\n**R-ID:** all\n\n聚合套件。\n\n- [ ] x\n"
+    res = ir.plan_budget(_plan(*_functional_chain(3), bad))
+    assert any("实现验证" in v for v in res["violations"]), res["violations"]
+
+
+def test_plan_budget_multiple_closing_reported_once():
+    text = _plan(*_functional_chain(2), _closing(3, "1, 2"), _closing(4, "1, 2, 3"))
+    res = ir.plan_budget(text)
+    assert sum("收尾" in v for v in res["violations"]) == 1, res["violations"]
+
+
+# ---------------------------------------------------------------------------
+# R-ID 覆盖（R-ID 定义源 = tasks.md 编号条目）
+# ---------------------------------------------------------------------------
+
+TASKS = """# Tasks
+
+## 1. 数据
+
+- [ ] 1.1 加字段（单测 test_field）
+- [x] 1.2 迁移脚本
+
+## 2. 接口
+
+- [ ] 2.1 新接口（集成测试）
+
+```
+- [ ] 9.9 围栏示例不算
+```
+
+## Workflow follow-up
+
+- archive 后通知（无复选框，不追踪）
+"""
+
+
+def test_tasks_item_ids_reads_numbered_checkboxes_fence_aware():
+    assert ir.tasks_item_ids(TASKS) == ["1.1", "1.2", "2.1"]
+
+
+def test_r_id_full_coverage_passes():
+    text = _plan(_task(1, "A", "none", r_id="1.1, 1.2"), _task(2, "B", "1", r_id="2.1"),
+                 _closing(3, "1, 2"))
+    res = ir.plan_budget(text, TASKS)
+    assert res["r_id_checked"] is True
+    assert res["violations"] == []
+
+
+def test_r_id_uncovered_item_is_violation():
+    text = _plan(_task(1, "A", "none", r_id="1.1"), _task(2, "B", "1", r_id="2.1"),
+                 _closing(3, "1, 2"))
+    res = ir.plan_budget(text, TASKS)
+    assert any("1.2" in v and "认领" in v for v in res["violations"]), res["violations"]
+
+
+def test_r_id_unknown_reference_is_violation():
+    text = _plan(_task(1, "A", "none", r_id="1.1, 1.2, R7"), _task(2, "B", "1", r_id="2.1"),
+                 _closing(3, "1, 2"))
+    res = ir.plan_budget(text, TASKS)
+    assert any("Task 1" in v and "R7" in v for v in res["violations"]), res["violations"]
+
+
+def test_r_id_missing_on_functional_ticket_is_violation():
+    no_rid = "### Task 2: B\n\n**Blocked-by:** 1\n\n- [ ] x\n\n"
+    text = _plan(_task(1, "A", "none", r_id="1.1, 1.2, 2.1"), no_rid, _closing(3, "1, 2"))
+    res = ir.plan_budget(text, TASKS)
+    assert any("Task 2 缺 R-ID" in v for v in res["violations"]), res["violations"]
+
+
+def test_r_id_tasks_without_numbered_items_is_violation():
+    text = _plan(_task(1, "A", "none"), _closing(2, "1"))
+    res = ir.plan_budget(text, "# Tasks\n\n- [ ] 没有编号\n")
+    assert any("定义源" in v for v in res["violations"]), res["violations"]
+
+
+def test_r_id_check_skipped_without_tasks_text():
+    res = ir.plan_budget(_plan(_task(1, "A", "none", r_id="whatever"), _closing(2, "1")))
+    assert res["r_id_checked"] is False
+    assert res["violations"] == []
+
+
+def test_cli_plan_budget_reads_sibling_tasks_md(tmp_path):
+    p = tmp_path / "tickets.md"
+    p.write_text(_plan(_task(1, "A", "none", r_id="1.1"), _closing(2, "1")), encoding="utf-8")
+    (tmp_path / "tasks.md").write_text(TASKS, encoding="utf-8")
+    r = _run_cli(p)
+    assert r.returncode == 1
+    assert "1.2" in r.stderr and "2.1" in r.stderr
+
+
+def test_cli_plan_budget_explicit_tasks_path(tmp_path):
+    p = tmp_path / "tickets.md"
+    p.write_text(_plan(_task(1, "A", "none", r_id="1.1, 1.2, 2.1"), _closing(2, "1")),
+                 encoding="utf-8")
+    t = tmp_path / "elsewhere.md"
+    t.write_text(TASKS, encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "plan-budget", "--plan", str(p), "--tasks", str(t)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+
+
+def test_cli_plan_budget_missing_tasks_md_is_violation(tmp_path):
+    p = tmp_path / "tickets.md"
+    p.write_text(_plan(_task(1, "A", "none"), _closing(2, "1")), encoding="utf-8")
+    r = _run_cli(p)
+    assert r.returncode == 1
+    assert "找不到 tasks.md" in r.stderr
