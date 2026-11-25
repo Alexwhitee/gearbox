@@ -207,7 +207,9 @@ impl-pipeline: tickets
 
 恢复执行时，只有 gate 的 `done_tasks` 可跳过。票已勾选或已有实现、但缺完成标签时，先读现有代码与报告，续做双轴自审和验收；仅补未完成的实现，不盲目重写。证据通过后再提交该票的完成标签。
 
-**选票**：`python3 <skills_root>/g-implement/scripts/impl_route.py frontier --plan {change_dir}/tickets.md --done <done_tasks 或 none>`，取返回的可执行票号中最小者，**逐票串行**。每票五步：
+**选票**：本次 `g-done` 首次 gate 若给出 `CONTINUE_IMPL` 的同一 change 票据摘录，核对 `git symbolic-ref --quiet --short HEAD`、`git rev-parse HEAD` 和票据 SHA-256。哈希用 `python3 -c 'import hashlib,sys; from pathlib import Path; print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())' "{change_dir}/tickets.md"`。
+三项一致即可在首票直接使用卡片中的票号、原文和全局硬约束；卡片指向 `design.md` 时从该文档读取硬约束。盘面有变化则重新跑 gate 取得 `done_tasks`。
+没有可用摘录或进入后续票时，运行 `python3 <skills_root>/g-implement/scripts/impl_route.py frontier --plan {change_dir}/tickets.md --done <done_tasks 或 none>`，取返回的可执行票号中最小者。**逐票串行**，每票五步：
 
 1. **实现**：按票内行为描述与验收标准写代码和测试，不越票范围（越界冲动 → 记 issues todo，不顺手做）。
 2. **双轴自审**（两轴各独立过一遍）：

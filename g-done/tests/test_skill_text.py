@@ -14,6 +14,14 @@ def test_gate_discipline_present():
     assert "禁止凭记忆排步序" in t
 
 
+def test_first_gate_uses_resume_context_with_existing_fallback():
+    t = text()
+    assert t.index("branch_context.py show") < t.index("首次 gate") < t.index("resume_context.py")
+    assert "续跑上下文不可用" in t and "重新直接跑 `ship_gate.py`" in t
+    implement = SKILL.parents[1] / "g-implement" / "SKILL.md"
+    assert "票据 SHA-256" in implement.read_text(encoding="utf-8")
+
+
 def test_no_push_and_merge_tristate():
     t = text()
     assert "不自动 push" in t

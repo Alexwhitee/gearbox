@@ -1249,7 +1249,9 @@ checkpoint-commit.sh <step> <描述> -- openspec/<文件> ...
 请重新读取 gate 与盘面产物，不依据上次聊天里“已经完成”的说法跳步。
 ```
 
-执行者应先确认仓根、分支、工作树和 change，再运行 gate。
+执行者先确认仓根、分支、工作树和 change。`g-done` 在首次 gate 检查时同时读取续跑上下文，给出当前分支、HEAD 和该步的材料路径。实现阶段会直接摘出下一张可执行票、全局硬约束和已有的本票报告路径。
+
+续跑上下文随盘面即时生成。已勾选但还没有完成 checkpoint 的票仍需核对代码和验收。分支、HEAD 或票据内容变化时，重新读取 gate；摘录不可用时，按下表读取原产物。
 
 ### 13.2 常见断点
 
@@ -1312,14 +1314,17 @@ bash "$HOME/.g/hack/resolve-workflow.sh" --root "$(git rev-parse --show-toplevel
 
 规则 resolver 成功时 stdout 是规则根；失败会给出显式告警。它不会因为消费仓残留一套本地规则，就静默把旧副本当作当前权威源。
 
-### 14.3 只读查看 gate 与本次分支约定
+### 14.3 只读查看续跑上下文、gate 与本次分支约定
 
 将 change 替换成真实名称：
 
 ```bash
+python3 "$G_SKILLS_ROOT/g-done/scripts/resume_context.py" --root . --change filter-orders-by-status
 python3 "$G_SKILLS_ROOT/g-done/scripts/ship_gate.py" --root . --change filter-orders-by-status
 python3 "$G_SKILLS_ROOT/g-done/scripts/branch_context.py" show --root . --change filter-orders-by-status
 ```
+
+`resume_context.py` 先打印原 gate 输出，再附 Markdown 材料清单或票据摘录，退出码沿用 gate。材料路径相对于消费仓根目录。
 
 `branch_context.py show` 输出四项约定与 context_path。`ship_gate.py --default-branch` 仍可单独诊断仓库默认分支，但它不是本 change 的合并去向。
 

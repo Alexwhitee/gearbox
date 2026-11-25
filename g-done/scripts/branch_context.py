@@ -136,4 +136,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):
+        try: _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception: pass
     raise SystemExit(main())

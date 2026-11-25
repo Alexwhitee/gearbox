@@ -165,6 +165,10 @@ description: >
 1. **每步前后跑 gate，禁止凭记忆排步序**：
    `python3 <skills_root>/g-done/scripts/ship_gate.py --change {change} --root "$(git rev-parse --show-toplevel)"`
    首行人读摘要照抄进对话，JSON 的 `verdict` / `next` / `done_tasks` 供判定。
+   分支约定检查通过后，本次调用的**首次 gate**用以下只读命令，一次取得 gate 和续跑上下文：
+   `python3 <skills_root>/g-done/scripts/resume_context.py --change {change} --root "$(git rev-parse --show-toplevel)"`
+   `## 续跑上下文` 标题前是原 gate 输出，取其中最后一行 JSON。用一行告诉用户当前票号或当步材料入口；有续跑票据摘录时交给本次 `g-implement mode=exec`。
+   旧安装缺脚本或提示「续跑上下文不可用」时，重新直接跑 `ship_gate.py` 并按原产物恢复。带有效上下文的 gate 非零退出仍按链序处理。
 2. **熔断**：同一 verdict 连续重跑 2 次仍无新产物 → 停下问人，MUST NOT 无限循环。
 3. **git**：只在本 skill 与各步 checkpoint 中提交；**不自动 push**。
 
